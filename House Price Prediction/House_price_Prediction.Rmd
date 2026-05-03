@@ -1,0 +1,3120 @@
+---
+title: "H-G06_final-project"
+author: "Ishrar Islam"
+date: "2026-04-15"
+output:
+  html_document:
+    df_print: default
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+## Introduction
+
+This report presents a regression-based data science project using the Ames Housing dataset from Kaggle.  
+The objective is to explore the dataset structure, understand feature types, visualize distributions and relationships, and prepare the data for later preprocessing and modeling.
+
+## Dataset Source
+
+**Dataset:** House Prices: Advanced Regression Techniques  
+**Source:** Kaggle  
+**Link:** https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/overview
+
+## Project Workflow
+
+This report is organized according to the project requirement: Data Collection, Data Exploration (EDA), Data Preprocessing, Modeling, and Evaluation.  
+At this stage, the report includes the completed work for Data Collection and Data Exploration, and opens the Data Preprocessing section for the next part.
+
+```{r setup, include=FALSE}
+# Global chunk options for cleaner report output
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+## Package Setup
+
+## Required Packages
+
+The following chunk prepares the packages needed for data loading, manipulation, visualization, and exploratory analysis.  
+The goal is to make the report reproducible on any machine without manual package setup.
+
+```{r package-setup}
+# List of required packages
+packages <- c(
+  "dplyr", "readr", "infotheo", "ggplot2", "scales",
+  "tidyr", "GGally", "e1071", "reshape2", "VIM", "curl"
+)
+
+# Remove duplicates just in case
+packages <- unique(packages)
+
+# Install only missing packages
+installed_packages <- rownames(installed.packages())
+missing_packages <- packages[!(packages %in% installed_packages)]
+
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+# Load all packages
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+## Helper Function
+
+A small helper function is defined below to compute the mode of a vector after excluding missing values.  
+This function may be useful later during preprocessing when categorical imputation is needed.
+
+```{r helper-function}
+# Helper function to calculate the mode of a vector
+get_mode <- function(v) {
+  v <- v[!is.na(v)]
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+# Data Collection
+
+### Objective of This Section
+
+This section imports the dataset automatically using a public link.  
+No local file path is used, so the code can run on any machine without modification.
+
+## Dataset Loading
+
+The following chunk reads the Ames Housing training dataset from a public Google Drive download URL.
+
+```{r data-loading}
+# Load the dataset into R using a public Google Drive download link
+# Dataset source:
+# Kaggle - House Prices: Advanced Regression Techniques
+# https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/overview
+# Original drive link:
+# https://drive.google.com/file/d/1WsdHhc8rYF7VaRmTROoKBToeenVGkEkb/view?usp=drive_link
+# Direct download link is used so the code runs automatically
+
+# This dataset contains residential house information from Ames, Iowa.
+# The target variable is SalePrice.
+# It includes both categorical and numerical features, making it suitable for regression.
+
+url <- "https://drive.google.com/uc?export=download&id=1WsdHhc8rYF7VaRmTROoKBToeenVGkEkb"
+dataset <- read_csv(url, show_col_types = FALSE)
+
+# Show the first few rows to confirm successful loading
+head(dataset)
+```
+
+# Data Exploration (EDA)
+
+### Overview of the EDA Section
+
+This section studies the dataset from several angles: overall structure, feature types, distributions, correlations, missing values, outliers, and duplicate rows.  
+The goal is to understand the data before any preprocessing or modeling is applied.
+
+## Dataset Shape, Types, and Summary Statistics
+
+### Basic Dataset Shape
+
+This subsection checks the size of the dataset by counting rows and columns.
+
+```{r dataset-shape}
+# Display the overall shape of the dataset
+cat("Dataset Shape:\n")
+cat("Number of rows    :", nrow(dataset), "\n")
+cat("Number of columns :", ncol(dataset), "\n\n")
+cat("Shape of dataset:", nrow(dataset), "rows ×", ncol(dataset), "columns")
+```
+
+### Structure and Data Types
+
+This subsection inspects the structure of the dataset and creates a simple overview table showing the R data type, missing value count, and number of unique values for each feature.
+
+```{r structure-and-types}
+# Display the structure of the dataset
+cat("Structure of the dataset:\n")
+glimpse(dataset)
+
+# Create a simple overview table for all columns
+feature_overview <- data.frame(
+  Feature = names(dataset),
+  R_Type = sapply(dataset, function(x) class(x)[1]),
+  Missing_Values = sapply(dataset, function(x) sum(is.na(x))),
+  Unique_Values = sapply(dataset, dplyr::n_distinct)
+)
+
+cat("\nFeature overview:\n")
+print(feature_overview)
+
+cat("\nCount of R data types:\n")
+print(table(feature_overview$R_Type))
+```
+
+### Summary Statistics
+
+This subsection provides both a general summary and a separate summary for numeric features, including mean, median, standard deviation, minimum, and maximum.
+
+```{r summary-statistics}
+# General summary for the full dataset
+cat("\nOverall summary using summary():\n")
+summary(dataset)
+
+# Separate summary statistics for numeric columns
+numeric_summary <- dataset %>%
+  select(where(is.numeric)) %>%
+  summarise(
+    across(
+      everything(),
+      list(
+        Mean   = ~ mean(.x, na.rm = TRUE),
+        Median = ~ median(.x, na.rm = TRUE),
+        SD     = ~ sd(.x, na.rm = TRUE),
+        Min    = ~ min(.x, na.rm = TRUE),
+        Max    = ~ max(.x, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Feature", "Statistic"),
+    names_pattern = "(.+)_(Mean|Median|SD|Min|Max)$",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(names_from = Statistic, values_from = Value)
+
+cat("\nNumeric summary statistics:\n")
+print(numeric_summary)
+```
+
+## Identify Feature Types
+
+### Feature-Type Logic
+
+This subsection separates the identifier, target variable, numeric variables, and categorical variables.  
+It also handles a few columns that are stored as numeric but behave more like categories in interpretation.
+
+```{r feature-type-preparation}
+# Define important feature groups
+identifier_features <- c("Id")
+target_feature <- c("SalePrice")
+
+# These are stored as numeric originally, but they behave like categories
+numeric_but_categorical <- c("MSSubClass", "MoSold", "YrSold")
+
+# Convert numeric-but-categorical columns to factor type
+for (col in numeric_but_categorical) {
+  if (col %in% names(dataset)) {
+    dataset[[col]] <- as.factor(dataset[[col]])
+  }
+}
+```
+
+### Numeric and Categorical Feature Matrices
+
+This subsection creates separate tables for numeric and categorical features so they can be inspected more clearly.
+
+```{r feature-matrices}
+# Create lists of numeric and categorical features
+numeric_features <- names(dataset)[sapply(dataset, is.numeric)]
+numeric_features <- setdiff(numeric_features, "Id")   # Id is only an identifier
+
+categorical_features <- names(dataset)[sapply(dataset, function(x) is.character(x))]
+
+# Build a numeric feature summary table
+numeric_feature_matrix <- data.frame(
+  Feature = numeric_features,
+  Missing_Values = sapply(dataset[numeric_features], function(x) sum(is.na(x))),
+  Unique_Values = sapply(dataset[numeric_features], dplyr::n_distinct),
+  stringsAsFactors = FALSE
+)
+
+# Build a categorical feature summary table
+categorical_feature_matrix <- data.frame(
+  Feature = categorical_features,
+  Missing_Values = sapply(dataset[categorical_features], function(x) sum(is.na(x))),
+  Unique_Values = sapply(dataset[categorical_features], dplyr::n_distinct),
+  stringsAsFactors = FALSE
+)
+
+cat("Numeric Feature Matrix:\n")
+print(numeric_feature_matrix)
+
+cat("\nCategorical Feature Matrix:\n")
+print(categorical_feature_matrix)
+```
+
+### Analytical Feature-Type Table
+
+This subsection creates a final analytical feature-type table that labels each column according to its role in the project.
+
+```{r analytical-feature-types}
+# Create a final feature-type table
+feature_types <- data.frame(Feature = names(dataset)) %>%
+  mutate(
+    Feature_Type = case_when(
+      Feature %in% identifier_features ~ "Identifier",
+      Feature %in% target_feature ~ "Target Variable (Continuous Numeric)",
+      Feature %in% numeric_but_categorical ~ "Numeric but Categorical",
+      Feature %in% categorical_features ~ "Categorical",
+      Feature %in% numeric_features ~ "Numeric",
+      TRUE ~ "Other"
+    ),
+    R_Type = sapply(dataset[Feature], function(x) class(x)[1])
+  )
+
+cat("\nIdentified feature types:\n")
+print(feature_types)
+
+cat("\nCount of analytical feature types:\n")
+print(table(feature_types$Feature_Type))
+```
+
+## Visualize Distributions and Correlations
+
+### Why These Visuals Are Used
+
+This subsection explores the distribution of numeric and categorical variables and studies relationships among features.  
+Histograms and boxplots help understand spread and outliers, bar charts show category frequencies, and correlation/scatter plots reveal relationships with the target.
+
+### Histograms for Numeric Features
+
+This chunk generates a histogram for each numeric feature.
+
+```{r histograms-numeric, fig.height=5, fig.width=8}
+# Create histograms for all numeric features
+for (col in numeric_features) {
+  x <- dataset[[col]]
+  x <- x[!is.na(x)]
+
+  if (length(x) > 0) {
+    p <- ggplot(dataset, aes(x = .data[[col]])) +
+      geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.8) +
+      labs(
+        title = paste("Histogram of", col),
+        x = col,
+        y = "Frequency"
+      ) +
+      theme_minimal()
+
+    print(p)
+  }
+}
+```
+
+### Boxplots for Numeric Features
+
+This chunk generates a boxplot for each numeric feature to inspect spread and possible outliers.
+
+```{r boxplots-numeric, fig.height=5, fig.width=8}
+# Create boxplots for all numeric features
+for (col in numeric_features) {
+  x <- dataset[[col]]
+  x <- x[!is.na(x)]
+
+  if (length(x) > 0) {
+    p <- ggplot(dataset, aes(y = .data[[col]])) +
+      geom_boxplot(fill = "tomato", color = "black", alpha = 0.7, outlier.color = "blue") +
+      labs(
+        title = paste("Boxplot of", col),
+        y = col
+      ) +
+      theme_minimal()
+
+    print(p)
+  }
+}
+```
+
+### Bar Charts for Categorical Features
+
+This chunk generates a bar chart for each categorical feature to show the frequency of categories.
+
+```{r barplots-categorical, fig.height=5, fig.width=8}
+# Create bar charts for all categorical features
+for (col in categorical_features) {
+  plot_data <- dataset %>%
+    filter(!is.na(.data[[col]])) %>%
+    count(.data[[col]], name = "Count") %>%
+    arrange(desc(Count))
+
+  if (nrow(plot_data) > 0) {
+    names(plot_data)[1] <- "Category"
+
+    p <- ggplot(plot_data, aes(x = reorder(Category, Count), y = Count)) +
+      geom_col(fill = "darkgreen", color = "black", alpha = 0.8) +
+      coord_flip() +
+      labs(
+        title = paste("Bar Chart of", col),
+        x = col,
+        y = "Count"
+      ) +
+      theme_minimal()
+
+    print(p)
+  }
+}
+```
+
+### Correlation Heatmap for Numeric Features
+
+This chunk computes the pairwise correlation matrix for numeric variables and visualizes it as a heatmap.
+
+```{r correlation-heatmap, fig.height=10, fig.width=11}
+# Select numeric data for correlation analysis
+numeric_data_for_corr <- dataset %>%
+  select(all_of(numeric_features))
+
+# Compute correlation matrix using pairwise complete observations
+cor_matrix <- cor(numeric_data_for_corr, use = "pairwise.complete.obs")
+
+# Convert matrix to long format for plotting
+cor_long <- reshape2::melt(cor_matrix)
+
+# Plot the correlation heatmap
+ggplot(cor_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  labs(
+    title = "Correlation Heatmap of Numeric Features",
+    x = "",
+    y = "",
+    fill = "Correlation"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+    axis.text.y = element_text(size = 8)
+  )
+```
+
+### Correlation Table with the Target Variable
+
+This chunk ranks numeric predictors by their absolute correlation with `SalePrice`.
+
+```{r saleprice-correlation-table}
+# Define the target variable and the list of numeric predictors
+target <- "SalePrice"
+numeric_predictors <- setdiff(numeric_features, target)
+
+# Build a correlation table with SalePrice
+saleprice_cor_table <- data.frame(
+  Feature = numeric_predictors,
+  Correlation_With_SalePrice = sapply(numeric_predictors, function(col) {
+    cor(dataset[[col]], dataset[[target]], use = "complete.obs")
+  })
+)
+
+saleprice_cor_table <- saleprice_cor_table %>%
+  mutate(Abs_Correlation = abs(Correlation_With_SalePrice)) %>%
+  arrange(desc(Abs_Correlation))
+
+cat("\nCorrelation of numeric features with SalePrice:\n")
+print(saleprice_cor_table)
+```
+
+### Scatter Plots of `SalePrice` vs Numeric Predictors
+
+This chunk visualizes the relationship between the target and each numeric predictor using scatter plots with fitted linear trend lines.
+
+```{r scatterplots-saleprice, fig.height=5, fig.width=8}
+# Create scatter plots for SalePrice against all numeric predictors
+for (col in numeric_predictors) {
+  p <- ggplot(dataset, aes(x = .data[[col]], y = .data[[target]])) +
+    geom_point(alpha = 0.5, color = "darkblue") +
+    geom_smooth(method = "lm", se = FALSE, color = "red") +
+    scale_y_continuous(labels = scales::comma) +
+    labs(
+      title = paste("Scatter Plot of", target, "vs", col),
+      x = col,
+      y = target
+    ) +
+    theme_minimal()
+
+  print(p)
+}
+```
+
+### Boxplots of `SalePrice` by Categorical Features
+
+This chunk compares the distribution of `SalePrice` across all categorical features.
+
+```{r saleprice-by-category, fig.height=5, fig.width=8}
+# Create boxplots of SalePrice grouped by each categorical feature
+for (col in categorical_features) {
+  plot_data <- dataset %>%
+    filter(!is.na(.data[[col]]), !is.na(.data[[target]])) %>%
+    mutate(temp_category = reorder(as.character(.data[[col]]), .data[[target]], FUN = median))
+
+  if (nrow(plot_data) > 0) {
+    p <- ggplot(plot_data, aes(x = temp_category, y = .data[[target]])) +
+      geom_boxplot(fill = "orange", color = "black", alpha = 0.8) +
+      coord_flip() +
+      scale_y_continuous(labels = scales::comma) +
+      labs(
+        title = paste("Boxplot of SalePrice by", col),
+        x = col,
+        y = "SalePrice"
+      ) +
+      theme_minimal()
+
+    print(p)
+  }
+}
+```
+
+##  Detect Missing Values, Outliers, and Duplicate Rows
+
+### Missing-Value Analysis
+
+This subsection calculates the number and percentage of missing values for every column and also lists only the columns where missing values are present.
+
+```{r missing-values-summary}
+# Calculate missing values for all columns
+missing_summary <- data.frame(
+  Feature = names(dataset),
+  Missing_Count = sapply(dataset, function(x) sum(is.na(x))),
+  Total_Rows = nrow(dataset),
+  Missing_Percentage = round((sapply(dataset, function(x) sum(is.na(x))) / nrow(dataset)) * 100, 2),
+  stringsAsFactors = FALSE
+)
+
+# Sort columns by missing count
+missing_summary <- missing_summary %>%
+  arrange(desc(Missing_Count))
+
+cat("Missing values summary for all columns:\n")
+print(missing_summary)
+
+# Show only columns that actually have missing values
+missing_only <- missing_summary %>%
+  filter(Missing_Count > 0)
+
+cat("\nColumns with missing values only:\n")
+print(missing_only)
+```
+
+### Outlier Detection Using IQR
+
+This subsection detects outliers in numeric columns using the standard IQR rule based on Q1, Q3, and 1.5 × IQR.
+
+```{r outlier-summary}
+# Initialize an empty data frame to store outlier summaries
+outlier_summary <- data.frame()
+
+# Detect outliers for each numeric feature using the IQR method
+for (col in numeric_features) {
+  x <- dataset[[col]]
+  x_non_na <- x[!is.na(x)]
+
+  # Skip the column if all values are missing
+  if (length(x_non_na) == 0) next
+
+  # Compute Q1, Q3, IQR, and bounds
+  Q1 <- quantile(x_non_na, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x_non_na, 0.75, na.rm = TRUE)
+  IQR_value <- IQR(x_non_na, na.rm = TRUE)
+
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+
+  # Count outliers and compute their percentage
+  outlier_count <- sum(x_non_na < lower_bound | x_non_na > upper_bound, na.rm = TRUE)
+  outlier_percentage <- round((outlier_count / length(x_non_na)) * 100, 2)
+
+  # Store the summary for this feature
+  temp <- data.frame(
+    Feature = col,
+    Q1 = as.numeric(Q1),
+    Q3 = as.numeric(Q3),
+    IQR = as.numeric(IQR_value),
+    Lower_Bound = as.numeric(lower_bound),
+    Upper_Bound = as.numeric(upper_bound),
+    Outlier_Count = outlier_count,
+    Outlier_Percentage = outlier_percentage,
+    stringsAsFactors = FALSE
+  )
+
+  outlier_summary <- rbind(outlier_summary, temp)
+}
+
+# Arrange features by number of outliers
+outlier_summary <- outlier_summary %>%
+  arrange(desc(Outlier_Count))
+
+cat("\nOutlier summary for numeric columns using IQR method:\n")
+print(outlier_summary)
+```
+
+```{r outlier-count}
+# Show only columns with detected outliers
+outlier_only <- outlier_summary %>%
+  filter(Outlier_Count > 0)
+
+cat("\nNumeric columns with detected outliers only:\n")
+print(outlier_only)
+```
+
+### Detailed Outlier Rows
+
+This subsection stores the actual outlier rows for each numeric feature so they can be inspected individually later.
+
+```{r outlier-details}
+# Create a list to store row-wise outlier details for each numeric column
+outlier_details_list <- list()
+
+for (col in numeric_features) {
+  x <- dataset[[col]]
+
+  # Compute IQR-based bounds while ignoring missing values
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR_value <- IQR(x, na.rm = TRUE)
+
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+
+  # Extract rows that fall outside the lower/upper bounds
+  outlier_rows <- dataset %>%
+    filter(!is.na(.data[[col]]) & (.data[[col]] < lower_bound | .data[[col]] > upper_bound)) %>%
+    select(Id, all_of(col))
+
+  if (nrow(outlier_rows) > 0) {
+    outlier_details_list[[col]] <- outlier_rows
+  }
+}
+
+cat("\nOutlier details list created.\n")
+cat("Use outlier_details_list[['SalePrice']] or outlier_details_list[['GrLivArea']] to inspect specific columns.\n")
+
+# Print the list if full output is desired
+print(outlier_details_list)
+```
+
+### Duplicate-Row Check
+
+This subsection checks whether the dataset contains fully duplicated rows.
+
+```{r duplicate-rows}
+# Check duplicate rows in the whole dataset
+duplicate_row_flags <- duplicated(dataset)
+duplicate_row_count <- sum(duplicate_row_flags)
+
+cat("Total duplicate rows in the dataset:", duplicate_row_count, "\n")
+```
+
+# Data Preprocessing
+
+### Overview of the Next Step
+
+The next stage of the project is data preprocessing.  
+Based on the project requirement, this section will handle missing values and outliers, encode categorical variables, standardize or normalize numerical variables, perform feature engineering, and reduce skewness where necessary.
+
+##  Handle Missing Values and Outliers
+
+## Structural Missing Values: Justified Replacement (Part 1)
+
+In this section, structural missing values are handled only after checking supporting evidence from related columns in the same row.  
+The goal is to show that these missing values represent **absence of the feature**, not unknown data entry errors.
+
+For each feature group below, the report first shows some sample rows, then checks whether the missing rows consistently match the related zero-valued columns.  
+If the pattern is confirmed, the missing categorical values are replaced with `"None"` and the structural numeric values are replaced with `0`.
+
+### Garage Features
+
+For garage-related fields, the assumption is that if the following columns are missing in the same row:
+
+- `GarageType`
+- `GarageYrBlt`
+- `GarageFinish`
+- `GarageQual`
+- `GarageCond`
+
+and the same row also has:
+
+- `GarageCars = 0`
+- `GarageArea = 0`
+
+then that row most likely represents a house with **no garage**.
+
+```{r garage-justification-sample, message=FALSE, warning=FALSE}
+# Show sample rows where all key garage descriptive columns are missing
+# and inspect whether GarageCars and GarageArea are both zero
+
+garage_missing_rows <- dataset %>%
+  filter(
+    is.na(GarageType),
+    is.na(GarageYrBlt),
+    is.na(GarageFinish),
+    is.na(GarageQual),
+    is.na(GarageCond)
+  ) %>%
+  select(
+    Id, GarageType, GarageYrBlt, GarageFinish, GarageQual, GarageCond,
+    GarageCars, GarageArea
+  )
+
+cat("Sample rows for garage-related missing values:\n")
+print(garage_missing_rows %>% slice_head(n = 40))
+```
+
+```{r garage-justification-summary, message=FALSE, warning=FALSE}
+# Count how many rows have all garage-descriptive columns missing
+# and among them how many also have GarageCars = 0 and GarageArea = 0
+
+garage_all_missing_idx <- with(
+  dataset,
+  is.na(GarageType) &
+    is.na(GarageYrBlt) &
+    is.na(GarageFinish) &
+    is.na(GarageQual) &
+    is.na(GarageCond)
+)
+
+garage_zero_support_idx <- with(
+  dataset,
+  garage_all_missing_idx &
+    GarageCars == 0 &
+    GarageArea == 0
+)
+
+garage_summary <- data.frame(
+  Measure = c(
+    "Rows where all 5 garage descriptive fields are missing",
+    "Rows where all 5 garage descriptive fields are missing AND GarageCars = 0 AND GarageArea = 0",
+    "Rows where garage descriptive fields are missing but the zero-value pattern does NOT hold"
+  ),
+  Count = c(
+    sum(garage_all_missing_idx, na.rm = TRUE),
+    sum(garage_zero_support_idx, na.rm = TRUE),
+    sum(garage_all_missing_idx, na.rm = TRUE) - sum(garage_zero_support_idx, na.rm = TRUE)
+  )
+)
+
+cat("Garage justification summary:\n")
+print(garage_summary)
+```
+
+```{r garage-fill-structural-missing, message=FALSE, warning=FALSE}
+# If the pattern holds, fill garage categorical missing values with "None"
+# and the structural garage year with 0 for the justified rows
+
+garage_categorical_cols <- c("GarageType", "GarageFinish", "GarageQual", "GarageCond")
+
+for (col in garage_categorical_cols) {
+  if (is.factor(dataset[[col]]) && !("None" %in% levels(dataset[[col]]))) {
+    levels(dataset[[col]]) <- c(levels(dataset[[col]]), "None")
+  }
+  dataset[[col]][garage_zero_support_idx & is.na(dataset[[col]])] <- "None"
+}
+
+dataset$GarageYrBlt[garage_zero_support_idx & is.na(dataset$GarageYrBlt)] <- 0
+
+garage_fill_check <- data.frame(
+  Feature = c("GarageType", "GarageYrBlt", "GarageFinish", "GarageQual", "GarageCond"),
+  Missing_After = c(
+    sum(is.na(dataset$GarageType)),
+    sum(is.na(dataset$GarageYrBlt)),
+    sum(is.na(dataset$GarageFinish)),
+    sum(is.na(dataset$GarageQual)),
+    sum(is.na(dataset$GarageCond))
+  )
+)
+
+cat("Garage columns after justified filling:\n")
+print(garage_fill_check)
+```
+
+### Fireplace Quality
+
+For fireplace quality, the idea is simple: if `FireplaceQu` is missing and `Fireplaces = 0`, then the row most likely means the house has **no fireplace**.
+
+```{r fireplace-justification-sample, message=FALSE, warning=FALSE}
+# Show sample rows where FireplaceQu is missing
+# and inspect whether Fireplaces is zero in the same rows
+
+fireplace_missing_rows <- dataset %>%
+  filter(is.na(FireplaceQu)) %>%
+  select(Id, Fireplaces, FireplaceQu)
+
+cat("Sample rows for fireplace-related missing values:\n")
+print(fireplace_missing_rows %>% slice_head(n = 40))
+```
+
+```{r fireplace-justification-summary, message=FALSE, warning=FALSE}
+# Count how many rows have FireplaceQu missing
+# and among them how many also have Fireplaces = 0
+
+fireplace_missing_idx <- is.na(dataset$FireplaceQu)
+fireplace_zero_support_idx <- fireplace_missing_idx & dataset$Fireplaces == 0
+
+fireplace_summary <- data.frame(
+  Measure = c(
+    "Rows where FireplaceQu is missing",
+    "Rows where FireplaceQu is missing AND Fireplaces = 0",
+    "Rows where FireplaceQu is missing but Fireplaces is NOT 0"
+  ),
+  Count = c(
+    sum(fireplace_missing_idx, na.rm = TRUE),
+    sum(fireplace_zero_support_idx, na.rm = TRUE),
+    sum(fireplace_missing_idx, na.rm = TRUE) - sum(fireplace_zero_support_idx, na.rm = TRUE)
+  )
+)
+
+cat("Fireplace justification summary:\n")
+print(fireplace_summary)
+```
+
+```{r fireplace-fill-structural-missing, message=FALSE, warning=FALSE}
+# Fill FireplaceQu with "None" only for rows justified as having no fireplace
+
+if (is.factor(dataset$FireplaceQu) && !("None" %in% levels(dataset$FireplaceQu))) {
+  levels(dataset$FireplaceQu) <- c(levels(dataset$FireplaceQu), "None")
+}
+
+dataset$FireplaceQu[fireplace_zero_support_idx & is.na(dataset$FireplaceQu)] <- "None"
+
+cat("Remaining missing values in FireplaceQu after justified filling:\n")
+print(sum(is.na(dataset$FireplaceQu)))
+```
+
+### Pool Quality
+
+For pool quality, if `PoolQC` is missing and `PoolArea = 0`, then the row most likely means the house has **no pool**.
+
+```{r pool-justification-sample, message=FALSE, warning=FALSE}
+# Show sample rows where PoolQC is missing
+# and inspect whether PoolArea is zero in the same rows
+
+pool_missing_rows <- dataset %>%
+  filter(is.na(PoolQC)) %>%
+  select(Id, PoolArea, PoolQC)
+
+cat("Sample rows for pool-related missing values:\n")
+print(pool_missing_rows %>% slice_head(n = 40))
+```
+
+```{r pool-justification-summary, message=FALSE, warning=FALSE}
+# Count how many rows have PoolQC missing
+# and among them how many also have PoolArea = 0
+
+pool_missing_idx <- is.na(dataset$PoolQC)
+pool_zero_support_idx <- pool_missing_idx & dataset$PoolArea == 0
+
+pool_summary <- data.frame(
+  Measure = c(
+    "Rows where PoolQC is missing",
+    "Rows where PoolQC is missing AND PoolArea = 0",
+    "Rows where PoolQC is missing but PoolArea is NOT 0"
+  ),
+  Count = c(
+    sum(pool_missing_idx, na.rm = TRUE),
+    sum(pool_zero_support_idx, na.rm = TRUE),
+    sum(pool_missing_idx, na.rm = TRUE) - sum(pool_zero_support_idx, na.rm = TRUE)
+  )
+)
+
+cat("Pool justification summary:\n")
+print(pool_summary)
+```
+
+```{r pool-fill-structural-missing, message=FALSE, warning=FALSE}
+# Fill PoolQC with "None" only for rows justified as having no pool
+
+if (is.factor(dataset$PoolQC) && !("None" %in% levels(dataset$PoolQC))) {
+  levels(dataset$PoolQC) <- c(levels(dataset$PoolQC), "None")
+}
+
+dataset$PoolQC[pool_zero_support_idx & is.na(dataset$PoolQC)] <- "None"
+
+cat("Remaining missing values in PoolQC after justified filling:\n")
+print(sum(is.na(dataset$PoolQC)))
+```
+
+### Miscellaneous Feature
+
+For miscellaneous features, if `MiscFeature` is missing and `MiscVal = 0`, then the row most likely means the house has **no miscellaneous feature recorded**.
+
+```{r miscfeature-justification-sample, message=FALSE, warning=FALSE}
+# Show sample rows where MiscFeature is missing
+# and inspect whether MiscVal is zero in the same rows
+
+misc_missing_rows <- dataset %>%
+  filter(is.na(MiscFeature)) %>%
+  select(Id, MiscFeature, MiscVal)
+
+cat("Sample rows for miscellaneous feature missing values:\n")
+print(misc_missing_rows %>% slice_head(n = 40))
+```
+
+```{r miscfeature-justification-summary, message=FALSE, warning=FALSE}
+# Count how many rows have MiscFeature missing
+# and among them how many also have MiscVal = 0
+
+misc_missing_idx <- is.na(dataset$MiscFeature)
+misc_zero_support_idx <- misc_missing_idx & dataset$MiscVal == 0
+
+misc_summary <- data.frame(
+  Measure = c(
+    "Rows where MiscFeature is missing",
+    "Rows where MiscFeature is missing AND MiscVal = 0",
+    "Rows where MiscFeature is missing but MiscVal is NOT 0"
+  ),
+  Count = c(
+    sum(misc_missing_idx, na.rm = TRUE),
+    sum(misc_zero_support_idx, na.rm = TRUE),
+    sum(misc_missing_idx, na.rm = TRUE) - sum(misc_zero_support_idx, na.rm = TRUE)
+  )
+)
+
+cat("MiscFeature justification summary:\n")
+print(misc_summary)
+```
+
+```{r miscfeature-fill-structural-missing, message=FALSE, warning=FALSE}
+# Fill MiscFeature with "None" only for rows justified as having no misc feature
+
+if (is.factor(dataset$MiscFeature) && !("None" %in% levels(dataset$MiscFeature))) {
+  levels(dataset$MiscFeature) <- c(levels(dataset$MiscFeature), "None")
+}
+
+dataset$MiscFeature[misc_zero_support_idx & is.na(dataset$MiscFeature)] <- "None"
+
+cat("Remaining missing values in MiscFeature after justified filling:\n")
+print(sum(is.na(dataset$MiscFeature)))
+```
+
+### Alley and Fence
+
+For `Alley` and `Fence`, there is no strong numeric companion variable that can be used for row-wise proof in the same way as garage, fireplace, pool, or miscellaneous features.  
+However, by variable meaning:
+
+- `Alley` describes the type of alley access, so a missing value reasonably indicates **no alley access**
+- `Fence` describes fence quality, so a missing value reasonably indicates **no fence**
+
+Therefore, these missing values are treated as structural absence and filled with `"None"`.
+
+```{r alley-fence-before-fill, message=FALSE, warning=FALSE}
+# Check missing values before filling Alley and Fence
+
+alley_fence_before <- data.frame(
+  Feature = c("Alley", "Fence"),
+  Missing_Before = c(
+    sum(is.na(dataset$Alley)),
+    sum(is.na(dataset$Fence))
+  )
+)
+
+cat("Missing values before filling Alley and Fence:\n")
+print(alley_fence_before)
+```
+
+```{r alley-fence-fill-structural-missing, message=FALSE, warning=FALSE}
+# Fill Alley and Fence with "None" because missing values indicate
+# absence of alley access or absence of a fence
+
+for (col in c("Alley", "Fence")) {
+  if (is.factor(dataset[[col]]) && !("None" %in% levels(dataset[[col]]))) {
+    levels(dataset[[col]]) <- c(levels(dataset[[col]]), "None")
+  }
+  dataset[[col]][is.na(dataset[[col]])] <- "None"
+}
+```
+
+```{r alley-fence-after-fill, message=FALSE, warning=FALSE}
+# Check missing values after filling Alley and Fence
+
+alley_fence_after <- data.frame(
+  Feature = c("Alley", "Fence"),
+  Missing_After = c(
+    sum(is.na(dataset$Alley)),
+    sum(is.na(dataset$Fence))
+  )
+)
+
+cat("Missing values after filling Alley and Fence:\n")
+print(alley_fence_after)
+```
+
+
+
+### Basement Features: Justified Structural Missing Values (37-Row Group)
+
+Basement-related missing values are slightly more complex than the other structural-missing cases.  
+In this dataset, four basement descriptive columns have either 37 or 38 missing values:
+
+- `BsmtQual`
+- `BsmtCond`
+- `BsmtExposure`
+- `BsmtFinType1`
+- `BsmtFinType2`
+
+A row-wise justification is used here.  
+If a row has all key basement area variables equal to zero, then the missing basement descriptive fields likely indicate that the house has **no basement**, rather than unknown data.
+
+In this subsection, only the **37-row structural no-basement group** is handled.  
+Any extra inconsistent row will be left for later separate treatment.
+
+```{r bsmt-justification-37row-sample, message=FALSE, warning=FALSE}
+# Show sample rows where the basement appears to be structurally absent
+# based on zero basement-area values and missing basement descriptive fields
+
+bsmt_no_basement_rows <- dataset %>%
+  filter(
+    TotalBsmtSF == 0,
+    BsmtFinSF1 == 0,
+    BsmtFinSF2 == 0,
+    BsmtUnfSF == 0,
+    is.na(BsmtQual),
+    is.na(BsmtCond),
+    is.na(BsmtFinType1)
+  ) %>%
+  select(
+    Id,
+    BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2,
+    BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF,
+    BsmtFullBath, BsmtHalfBath
+  )
+
+cat("Sample rows from the 37-row structural no-basement group:\n")
+print(bsmt_no_basement_rows %>% slice_head(n = 40))
+```
+
+```{r bsmt-justification-37row-summary, message=FALSE, warning=FALSE}
+# Identify the 37-row structural no-basement group
+# These rows have all basement size variables equal to zero
+# and key basement descriptive fields missing
+
+bsmt_structural_idx <- with(
+  dataset,
+  TotalBsmtSF == 0 &
+    BsmtFinSF1 == 0 &
+    BsmtFinSF2 == 0 &
+    BsmtUnfSF == 0 &
+    is.na(BsmtQual) &
+    is.na(BsmtCond) &
+    is.na(BsmtFinType1)
+)
+
+# Count how many rows match this structural no-basement pattern
+# and compare it against the missing-value counts of basement descriptive columns
+
+bsmt_summary_37 <- data.frame(
+  Measure = c(
+    "Rows in the structural no-basement group",
+    "Missing count in BsmtQual",
+    "Missing count in BsmtCond",
+    "Missing count in BsmtFinType1",
+    "Missing count in BsmtExposure",
+    "Missing count in BsmtFinType2"
+  ),
+  Count = c(
+    sum(bsmt_structural_idx, na.rm = TRUE),
+    sum(is.na(dataset$BsmtQual)),
+    sum(is.na(dataset$BsmtCond)),
+    sum(is.na(dataset$BsmtFinType1)),
+    sum(is.na(dataset$BsmtExposure)),
+    sum(is.na(dataset$BsmtFinType2))
+  )
+)
+
+cat("Summary of the 37-row structural basement pattern:\n")
+print(bsmt_summary_37)
+```
+
+```{r bsmt-fill-37row-structural-missing, message=FALSE, warning=FALSE}
+# Fill basement descriptive columns with "None"
+# only for the justified 37-row no-basement group
+
+bsmt_categorical_cols <- c(
+  "BsmtQual",
+  "BsmtCond",
+  "BsmtExposure",
+  "BsmtFinType1",
+  "BsmtFinType2"
+)
+
+for (col in bsmt_categorical_cols) {
+  
+  # If the column is a factor, add "None" as a valid level first
+  if (is.factor(dataset[[col]]) && !("None" %in% levels(dataset[[col]]))) {
+    levels(dataset[[col]]) <- c(levels(dataset[[col]]), "None")
+  }
+  
+  # Fill only the rows in the 37-row justified structural group
+  dataset[[col]][bsmt_structural_idx & is.na(dataset[[col]])] <- "None"
+}
+```
+
+```{r bsmt-after-37row-fill, message=FALSE, warning=FALSE}
+# Check remaining missing values after filling only the structural 37-row group
+
+bsmt_after_37_fill <- data.frame(
+  Feature = c("BsmtQual", "BsmtCond", "BsmtExposure", "BsmtFinType1", "BsmtFinType2"),
+  Missing_After = c(
+    sum(is.na(dataset$BsmtQual)),
+    sum(is.na(dataset$BsmtCond)),
+    sum(is.na(dataset$BsmtExposure)),
+    sum(is.na(dataset$BsmtFinType1)),
+    sum(is.na(dataset$BsmtFinType2))
+  )
+)
+
+cat("Remaining missing values in basement descriptive columns after filling the 37-row structural group:\n")
+print(bsmt_after_37_fill)
+```
+
+```{r bsmt-leftover-extra-rows, message=FALSE, warning=FALSE}
+# Show the remaining rows that are still missing basement descriptive values
+# after the 37-row structural group has been handled
+
+bsmt_remaining_rows <- dataset %>%
+  filter(
+    is.na(BsmtExposure) | is.na(BsmtFinType2) |
+    is.na(BsmtQual) | is.na(BsmtCond) | is.na(BsmtFinType1)
+  ) %>%
+  select(
+    Id,
+    BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2,
+    BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF,
+    BsmtFullBath, BsmtHalfBath
+  )
+
+cat("Remaining basement-missing rows after handling the 37-row structural group:\n")
+print(bsmt_remaining_rows)
+```
+
+### Masonry Veneer Missing Values (`MasVnrType` and `MasVnrArea`)
+
+`MasVnrType` and `MasVnrArea` each contain a very small number of missing values.  
+However, these two variables describe the same masonry veneer feature and are strongly related.  
+Because of this dependency, simple independent imputation using mode for `MasVnrType` and median for `MasVnrArea` could create unrealistic or unsupported type–area combinations.
+
+In addition, the missingness pattern could not be strongly justified as structural absence in the same way as garage, fireplace, pool, or basement features.  
+Therefore, instead of forcing imputation, the affected rows are removed from the training dataset. Since only 8 rows are affected, this removal is unlikely to have any meaningful impact on model performance.
+
+```{r masvnr-missing-rows-sample, message=FALSE, warning=FALSE}
+# Show the rows where MasVnrType or MasVnrArea is missing
+# This helps inspect the affected observations before removal
+
+masvnr_missing_rows <- dataset %>%
+  filter(is.na(MasVnrType) | is.na(MasVnrArea)) %>%
+  select(Id, MasVnrType, MasVnrArea)
+
+cat("Rows with missing values in MasVnrType or MasVnrArea:\n")
+print(masvnr_missing_rows)
+```
+
+```{r masvnr-missing-summary, message=FALSE, warning=FALSE}
+# Count the number of affected rows and the percentage of the dataset
+
+masvnr_missing_idx <- is.na(dataset$MasVnrType) | is.na(dataset$MasVnrArea)
+
+masvnr_summary <- data.frame(
+  Measure = c(
+    "Rows with missing MasVnrType",
+    "Rows with missing MasVnrArea",
+    "Rows affected in either column",
+    "Percentage of total dataset"
+  ),
+  Value = c(
+    sum(is.na(dataset$MasVnrType)),
+    sum(is.na(dataset$MasVnrArea)),
+    sum(masvnr_missing_idx),
+    round(sum(masvnr_missing_idx) / nrow(dataset) * 100, 2)
+  )
+)
+
+cat("Summary of missing values in masonry veneer variables:\n")
+print(masvnr_summary)
+```
+
+```{r masvnr-drop-rows, message=FALSE, warning=FALSE}
+# Store dataset size before dropping rows
+rows_before_masvnr_drop <- nrow(dataset)
+
+# Remove rows where either MasVnrType or MasVnrArea is missing
+dataset <- dataset %>%
+  filter(!(is.na(MasVnrType) | is.na(MasVnrArea)))
+
+# Store dataset size after dropping rows
+rows_after_masvnr_drop <- nrow(dataset)
+
+# Create a summary of the row removal
+masvnr_drop_summary <- data.frame(
+  Measure = c(
+    "Rows before dropping",
+    "Rows removed",
+    "Rows after dropping"
+  ),
+  Value = c(
+    rows_before_masvnr_drop,
+    rows_before_masvnr_drop - rows_after_masvnr_drop,
+    rows_after_masvnr_drop
+  )
+)
+
+cat("Dataset size before and after removing masonry veneer missing rows:\n")
+print(masvnr_drop_summary)
+```
+
+```{r masvnr-check-after-drop, message=FALSE, warning=FALSE}
+# Verify that no missing values remain in MasVnrType and MasVnrArea
+
+masvnr_after_drop_check <- data.frame(
+  Feature = c("MasVnrType", "MasVnrArea"),
+  Missing_After = c(
+    sum(is.na(dataset$MasVnrType)),
+    sum(is.na(dataset$MasVnrArea))
+  )
+)
+
+cat("Missing values in MasVnrType and MasVnrArea after row removal:\n")
+print(masvnr_after_drop_check)
+```
+
+### Remove the Remaining Special-Case Missing Rows
+
+After handling structural missing values and removing the 8 rows with unresolved masonry veneer missingness, only a very small number of special-case rows remain with missing values in basement-related fields and `Electrical`.
+
+These remaining rows are not ideal candidates for direct imputation:
+
+- the basement rows are inconsistent cases rather than clean structural-missing cases
+- the `Electrical` column has only one missing row
+
+Since these remaining cases affect only a very small fraction of the dataset, they are removed instead of forcing unsupported imputations.
+
+```{r drop-remaining-special-missing-rows-sample, message=FALSE, warning=FALSE}
+# Show the remaining rows with missing basement-related values or missing Electrical
+# before dropping them from the dataset
+
+remaining_special_missing_rows <- dataset %>%
+  filter(
+    is.na(BsmtExposure) |
+    is.na(BsmtFinType2) |
+    is.na(Electrical)
+  ) %>%
+  select(
+    Id,
+    BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2,
+    BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF,
+    BsmtFullBath, BsmtHalfBath,
+    Electrical
+  )
+
+cat("Remaining special-case rows with basement or Electrical missing values:\n")
+print(remaining_special_missing_rows)
+```
+
+```{r drop-remaining-special-missing-rows-summary, message=FALSE, warning=FALSE}
+# Count how many rows are affected before dropping them
+
+remaining_special_missing_idx <- with(
+  dataset,
+  is.na(BsmtExposure) |
+    is.na(BsmtFinType2) |
+    is.na(Electrical)
+)
+
+remaining_special_missing_summary <- data.frame(
+  Measure = c(
+    "Rows with missing BsmtExposure",
+    "Rows with missing BsmtFinType2",
+    "Rows with missing Electrical",
+    "Total rows to be removed"
+  ),
+  Value = c(
+    sum(is.na(dataset$BsmtExposure)),
+    sum(is.na(dataset$BsmtFinType2)),
+    sum(is.na(dataset$Electrical)),
+    sum(remaining_special_missing_idx)
+  )
+)
+
+cat("Summary of the remaining special-case missing rows:\n")
+print(remaining_special_missing_summary)
+```
+
+```{r drop-remaining-special-missing-rows, message=FALSE, warning=FALSE}
+# Store the dataset size before dropping rows
+rows_before_special_drop <- nrow(dataset)
+
+# Remove the remaining special-case rows
+dataset <- dataset %>%
+  filter(
+    !(
+      is.na(BsmtExposure) |
+      is.na(BsmtFinType2) |
+      is.na(Electrical)
+    )
+  )
+
+# Store the dataset size after dropping rows
+rows_after_special_drop <- nrow(dataset)
+
+# Summarize the row removal
+special_drop_summary <- data.frame(
+  Measure = c(
+    "Rows before dropping",
+    "Rows removed",
+    "Rows after dropping"
+  ),
+  Value = c(
+    rows_before_special_drop,
+    rows_before_special_drop - rows_after_special_drop,
+    rows_after_special_drop
+  )
+)
+
+cat("Dataset size before and after removing the remaining special-case rows:\n")
+print(special_drop_summary)
+```
+
+```{r check-after-special-drop, message=FALSE, warning=FALSE}
+# Verify that no missing values remain in the dropped special-case columns
+
+special_drop_check <- data.frame(
+  Feature = c("BsmtExposure", "BsmtFinType2", "Electrical"),
+  Missing_After = c(
+    sum(is.na(dataset$BsmtExposure)),
+    sum(is.na(dataset$BsmtFinType2)),
+    sum(is.na(dataset$Electrical))
+  )
+)
+
+cat("Missing values after removing the remaining special-case rows:\n")
+print(special_drop_check)
+```
+
+### Impute `LotFrontage` Using Neighborhood-Wise Median
+
+`LotFrontage` still contains missing values after the other missing-value issues have been resolved.  
+Since frontage is related to property location and lot characteristics, it is more reasonable to impute it using the median within each `Neighborhood` rather than using a single global value directly.
+
+The median is preferred over the mean because it is more robust to extreme values and skewness.  
+After neighborhood-wise imputation, any remaining missing values are filled using the overall dataset median as a fallback.
+
+```{r lotfrontage-before-imputation, message=FALSE, warning=FALSE}
+# Check the number of missing LotFrontage values before imputation
+
+lotfrontage_before <- data.frame(
+  Feature = "LotFrontage",
+  Missing_Before = sum(is.na(dataset$LotFrontage))
+)
+
+cat("Missing values in LotFrontage before imputation:\n")
+print(lotfrontage_before)
+```
+
+```{r lotfrontage-imputation, message=FALSE, warning=FALSE}
+# Save the overall median as a fallback value
+overall_lotfrontage_median <- median(dataset$LotFrontage, na.rm = TRUE)
+
+# Fill missing LotFrontage values using the median within each Neighborhood
+dataset <- dataset %>%
+  group_by(Neighborhood) %>%
+  mutate(
+    LotFrontage = ifelse(
+      is.na(LotFrontage),
+      median(LotFrontage, na.rm = TRUE),
+      LotFrontage
+    )
+  ) %>%
+  ungroup()
+
+# If any LotFrontage values are still missing, fill them using the overall median
+dataset$LotFrontage[is.na(dataset$LotFrontage)] <- overall_lotfrontage_median
+```
+
+```{r lotfrontage-after-imputation, message=FALSE, warning=FALSE}
+# Verify that LotFrontage no longer contains missing values
+
+lotfrontage_after <- data.frame(
+  Feature = "LotFrontage",
+  Missing_After = sum(is.na(dataset$LotFrontage))
+)
+
+cat("Missing values in LotFrontage after imputation:\n")
+print(lotfrontage_after)
+```
+
+
+```{r missing-values-summary2}
+# Calculate missing values for all columns after handeling al missing values
+missing_summary <- data.frame(
+  Feature = names(dataset),
+  Missing_Count = sapply(dataset, function(x) sum(is.na(x))),
+  Total_Rows = nrow(dataset),
+  Missing_Percentage = round((sapply(dataset, function(x) sum(is.na(x))) / nrow(dataset)) * 100, 2),
+  stringsAsFactors = FALSE
+)
+
+# Sort columns by missing count
+missing_summary <- missing_summary %>%
+  arrange(desc(Missing_Count))
+
+cat("Missing values summary for all columns:\n")
+print(missing_summary)
+```
+
+
+
+### Handle Outliers Selectively
+### Outlier Detection Using IQR after filling missing data
+
+This subsection detects outliers in numeric columns using the standard IQR rule based on Q1, Q3, and 1.5 × IQR.
+
+```{r outlier-summary-2}
+# Initialize an empty data frame to store outlier summaries
+outlier_summary <- data.frame()
+
+# Detect outliers for each numeric feature using the IQR method
+for (col in numeric_features) {
+  x <- dataset[[col]]
+  x_non_na <- x[!is.na(x)]
+
+  # Skip the column if all values are missing
+  if (length(x_non_na) == 0) next
+
+  # Compute Q1, Q3, IQR, and bounds
+  Q1 <- quantile(x_non_na, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x_non_na, 0.75, na.rm = TRUE)
+  IQR_value <- IQR(x_non_na, na.rm = TRUE)
+
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+
+  # Count outliers and compute their percentage
+  outlier_count <- sum(x_non_na < lower_bound | x_non_na > upper_bound, na.rm = TRUE)
+  outlier_percentage <- round((outlier_count / length(x_non_na)) * 100, 2)
+
+  # Store the summary for this feature
+  temp <- data.frame(
+    Feature = col,
+    Q1 = as.numeric(Q1),
+    Q3 = as.numeric(Q3),
+    IQR = as.numeric(IQR_value),
+    Lower_Bound = as.numeric(lower_bound),
+    Upper_Bound = as.numeric(upper_bound),
+    Outlier_Count = outlier_count,
+    Outlier_Percentage = outlier_percentage,
+    stringsAsFactors = FALSE
+  )
+
+  outlier_summary <- rbind(outlier_summary, temp)
+}
+
+# Arrange features by number of outliers
+outlier_summary <- outlier_summary %>%
+  arrange(desc(Outlier_Count))
+
+cat("\nOutlier summary for numeric columns using IQR method:\n")
+print(outlier_summary)
+```
+
+
+
+### Why Only Selected Columns Are Treated
+
+Although the IQR-based outlier summary identified many numeric columns as containing outliers, not all of them are suitable for direct outlier treatment.
+
+Many numeric features in the Ames Housing dataset have one or more of the following properties:
+
+- they contain a very large number of zero values
+- they are count-based variables, such as number of rooms, fireplaces, or garages
+- they are year-based variables
+- they are structurally related to other variables, meaning direct modification could distort the original meaning of the data
+
+Because of this, a global outlier-handling approach was not applied to all numeric columns.  
+Instead, outlier treatment was limited to `LotArea` and `LotFrontage`, as these are continuous, positive, and more naturally suited to transformation.
+
+Rather than capping or removing observations, a `log1p()` transformation is used.  
+This reduces right-skewness and weakens the influence of extreme large values while preserving all rows.
+
+### Outlier Count Before Transformation
+
+The following chunk calculates the IQR-based outlier count for `LotArea` and `LotFrontage` before transformation.
+
+```{r lotarea-lotfrontage-outliers-before-after, message=FALSE, warning=FALSE}
+# Function to calculate IQR-based outlier count for one numeric vector
+get_outlier_count <- function(x) {
+  x_non_na <- x[!is.na(x)]
+  
+  Q1 <- quantile(x_non_na, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x_non_na, 0.75, na.rm = TRUE)
+  IQR_value <- IQR(x_non_na, na.rm = TRUE)
+  
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  
+  outlier_count <- sum(x_non_na < lower_bound | x_non_na > upper_bound, na.rm = TRUE)
+  
+  data.frame(
+    Q1 = as.numeric(Q1),
+    Q3 = as.numeric(Q3),
+    IQR = as.numeric(IQR_value),
+    Lower_Bound = as.numeric(lower_bound),
+    Upper_Bound = as.numeric(upper_bound),
+    Outlier_Count = outlier_count,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Outlier summary before transformation
+lotarea_before <- get_outlier_count(dataset$LotArea)
+lotfrontage_before <- get_outlier_count(dataset$LotFrontage)
+
+outlier_before_summary <- rbind(
+  cbind(Feature = "LotArea", lotarea_before),
+  cbind(Feature = "LotFrontage", lotfrontage_before)
+)
+
+cat("Outlier summary before log transformation:\n")
+print(outlier_before_summary)
+```
+
+
+### Why Only Selected Columns Are Treated
+
+Although the IQR-based outlier summary identified many numeric columns as containing outliers, not all of them are suitable for direct outlier treatment.
+
+Many numeric features in the Ames Housing dataset have one or more of the following properties:
+
+- they contain a very large number of zero values
+- they are count-based variables, such as number of rooms, fireplaces, or garages
+- they are year-based variables
+- they are structurally related to other variables, meaning direct modification could distort the original meaning of the data
+
+Because of this, a global outlier-handling approach was not applied to all numeric columns.  
+Instead, outlier treatment was limited to `LotArea` and `LotFrontage`, as these are continuous, positive, and more naturally suited to transformation.
+
+Rather than capping or removing observations, a `log1p()` transformation is used.  
+This reduces right-skewness and weakens the influence of extreme large values while preserving all rows.
+
+### Outlier Count Before Transformation
+
+The following chunk calculates the IQR-based outlier count for `LotArea` and `LotFrontage` before transformation.
+
+```{r lotarea-lotfrontage-outliers-before, message=FALSE, warning=FALSE}
+
+# Outlier summary before transformation
+lotarea_before <- get_outlier_count(dataset$LotArea)
+lotfrontage_before <- get_outlier_count(dataset$LotFrontage)
+
+outlier_before_summary <- rbind(
+  cbind(Feature = "LotArea", lotarea_before),
+  cbind(Feature = "LotFrontage", lotfrontage_before)
+)
+
+cat("Outlier summary before log transformation:\n")
+print(outlier_before_summary)
+```
+
+### Apply Log Transformation
+
+The following chunk applies `log1p()` transformation to both `LotArea` and `LotFrontage`.
+
+`log1p(x)` means `log(1 + x)`, which is useful for positive variables and remains safe when values are zero.
+
+```{r lotarea-lotfrontage-log-transform, message=FALSE, warning=FALSE}
+# Apply log1p transformation to reduce the influence of large extreme values
+# and reduce right-skewness while keeping all rows
+
+dataset$LotArea_log <- log1p(dataset$LotArea)
+dataset$LotFrontage_log <- log1p(dataset$LotFrontage)
+
+cat("Log transformation applied to LotArea and LotFrontage.\n")
+```
+
+### Outlier Count After Transformation
+
+This chunk recalculates the IQR-based outlier count after transformation to see whether the transformation reduced the number of detected outliers.
+
+```{r lotarea-lotfrontage-outliers-after, message=FALSE, warning=FALSE}
+# Outlier summary after transformation
+lotarea_after <- get_outlier_count(dataset$LotArea_log)
+lotfrontage_after <- get_outlier_count(dataset$LotFrontage_log)
+
+outlier_after_summary <- rbind(
+  cbind(Feature = "LotArea_log", lotarea_after),
+  cbind(Feature = "LotFrontage_log", lotfrontage_after)
+)
+
+cat("Outlier summary after log transformation:\n")
+print(outlier_after_summary)
+```
+
+### Compare Before and After
+
+This final chunk compares the outlier count before and after transformation for the two selected variables.
+
+```{r lotarea-lotfrontage-outlier-comparison, message=FALSE, warning=FALSE}
+# Compare outlier counts before and after transformation
+
+outlier_comparison <- data.frame(
+  Feature = c("LotArea", "LotFrontage"),
+  Outliers_Before = c(
+    lotarea_before$Outlier_Count,
+    lotfrontage_before$Outlier_Count
+  ),
+  Outliers_After = c(
+    lotarea_after$Outlier_Count,
+    lotfrontage_after$Outlier_Count
+  )
+)
+
+cat("Comparison of outlier counts before and after transformation:\n")
+print(outlier_comparison)
+```
+
+
+```{r sqrt-transform-apply, message=FALSE, warning=FALSE}
+# Apply square root transformation to the two selected variables
+# New columns are created so the original variables remain unchanged
+
+dataset$LotArea_sqrt <- sqrt(dataset$LotArea)
+dataset$LotFrontage_sqrt <- sqrt(dataset$LotFrontage)
+
+cat("Square root transformation applied to LotArea and LotFrontage.\n")
+```
+
+```{r sqrt-outliers-after, message=FALSE, warning=FALSE}
+# Calculate and save outlier summaries for the transformed variables
+
+lotarea_after_sqrt <- get_outlier_count(dataset$LotArea_sqrt)
+lotfrontage_after_sqrt <- get_outlier_count(dataset$LotFrontage_sqrt)
+
+sqrt_outlier_after_summary <- rbind(
+  cbind(Feature = "LotArea_sqrt", lotarea_after_sqrt),
+  cbind(Feature = "LotFrontage_sqrt", lotfrontage_after_sqrt)
+)
+
+cat("Outlier summary after square root transformation:\n")
+print(sqrt_outlier_after_summary)
+```
+
+```{r sqrt-outlier-comparison, message=FALSE, warning=FALSE}
+# Compare outlier counts before and after square root transformation
+
+sqrt_outlier_comparison <- data.frame(
+  Feature = c("LotArea", "LotFrontage"),
+  Outliers_Before = c(
+    lotarea_before$Outlier_Count,
+    lotfrontage_before$Outlier_Count
+  ),
+  Outliers_After = c(
+    lotarea_after_sqrt$Outlier_Count,
+    lotfrontage_after_sqrt$Outlier_Count
+  )
+)
+
+cat("Comparison of outlier counts before and after square root transformation:\n")
+print(sqrt_outlier_comparison)
+```
+
+
+
+##  Encode Ordinal Categorical Variables
+
+
+```{r inspect-nominal-unique-values, message=FALSE, warning=FALSE}
+# Store the unique current values for each nominal column
+# The current values are used because preprocessing may already have changed some categories
+# for example, adding "None" for structural missing values
+
+unique_values <- list()
+cat_col <- names(dataset)[sapply(dataset, function(x) is.character(x))]
+
+for (col in cat_col) {
+  unique_values[[col]] <- sort(unique(as.character(dataset[[col]])))
+}
+cat("Categorical features.\n")
+print(cat_col)
+cat("Unique values for nominal columns have been collected.\n")
+cat("Use nominal_unique_values[['Neighborhood']] or nominal_unique_values[['GarageType']] to inspect a specific column.\n")
+
+print(unique_values)
+```
+### Why Label Encoding Is Used for These Columns
+
+The following categorical columns are treated as **ordinal** because their categories have a meaningful rank or progression.  
+For these variables, simple one-hot encoding would ignore the natural order among categories.
+
+Therefore, **label encoding** is used, where:
+
+- the **worst / lowest** category is encoded as `0`
+- better categories receive progressively higher values
+- the **best / highest** category receives the largest value
+
+For columns that now contain `"None"` after missing-value handling, `"None"` is treated as the lowest possible category.
+
+### Ordinal Ranking Rules
+
+The ordinal ranking used in this project is:
+
+- `LotShape`: `IR3 < IR2 < IR1 < Reg`
+- `LandSlope`: `Sev < Mod < Gtl`
+- `ExterQual`: `Fa < TA < Gd < Ex`
+- `ExterCond`: `Po < Fa < TA < Gd < Ex`
+- `BsmtQual`: `None < Fa < TA < Gd < Ex`
+- `BsmtCond`: `None < Po < Fa < TA < Gd`
+- `BsmtExposure`: `None < No < Mn < Av < Gd`
+- `BsmtFinType1`: `None < Unf < LwQ < Rec < BLQ < ALQ < GLQ`
+- `BsmtFinType2`: `None < Unf < LwQ < Rec < BLQ < ALQ < GLQ`
+- `HeatingQC`: `Po < Fa < TA < Gd < Ex`
+- `KitchenQual`: `Fa < TA < Gd < Ex`
+- `Functional`: `Sev < Maj2 < Maj1 < Mod < Min2 < Min1 < Typ`
+- `FireplaceQu`: `None < Po < Fa < TA < Gd < Ex`
+- `GarageFinish`: `None < Unf < RFn < Fin`
+- `GarageQual`: `None < Po < Fa < TA < Gd < Ex`
+- `GarageCond`: `None < Po < Fa < TA < Gd < Ex`
+- `PavedDrive`: `N < P < Y`
+- `PoolQC`: `None < Fa < Gd < Ex`
+- `Fence`: `None < MnWw < GdWo < MnPrv < GdPrv`
+
+### Define the Ordinal Mappings
+
+This chunk creates the label-encoding rules for each ordinal feature.  
+The lowest-quality category starts from `0`, and better categories receive larger integers.
+
+```{r define-ordinal-mappings, message=FALSE, warning=FALSE}
+# Create a named list of ordinal mappings
+# Each mapping assigns the lowest/worst category to 0
+# and higher/better categories to larger integers
+
+ordinal_mappings <- list(
+  LotShape = c("IR3" = 0, "IR2" = 1, "IR1" = 2, "Reg" = 3),
+  LandSlope = c("Sev" = 0, "Mod" = 1, "Gtl" = 2),
+  
+  ExterQual = c("Fa" = 0, "TA" = 1, "Gd" = 2, "Ex" = 3),
+  ExterCond = c("Po" = 0, "Fa" = 1, "TA" = 2, "Gd" = 3, "Ex" = 4),
+  
+  BsmtQual = c("None" = 0, "Fa" = 1, "TA" = 2, "Gd" = 3, "Ex" = 4),
+  BsmtCond = c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4),
+  BsmtExposure = c("None" = 0, "No" = 1, "Mn" = 2, "Av" = 3, "Gd" = 4),
+  BsmtFinType1 = c("None" = 0, "Unf" = 1, "LwQ" = 2, "Rec" = 3, "BLQ" = 4, "ALQ" = 5, "GLQ" = 6),
+  BsmtFinType2 = c("None" = 0, "Unf" = 1, "LwQ" = 2, "Rec" = 3, "BLQ" = 4, "ALQ" = 5, "GLQ" = 6),
+  
+  HeatingQC = c("Po" = 0, "Fa" = 1, "TA" = 2, "Gd" = 3, "Ex" = 4),
+  KitchenQual = c("Fa" = 0, "TA" = 1, "Gd" = 2, "Ex" = 3),
+  Functional = c("Sev" = 0, "Maj2" = 1, "Maj1" = 2, "Mod" = 3, "Min2" = 4, "Min1" = 5, "Typ" = 6),
+  
+  FireplaceQu = c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5),
+  
+  GarageFinish = c("None" = 0, "Unf" = 1, "RFn" = 2, "Fin" = 3),
+  GarageQual = c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5),
+  GarageCond = c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5),
+  
+  PavedDrive = c("N" = 0, "P" = 1, "Y" = 2),
+  
+  PoolQC = c("None" = 0, "Fa" = 1, "Gd" = 2, "Ex" = 3),
+  
+  Fence = c("None" = 0, "MnWw" = 1, "GdWo" = 2, "MnPrv" = 3, "GdPrv" = 4)
+)
+
+cat("Ordinal mappings have been defined.\n")
+print(names(ordinal_mappings))
+```
+
+### Apply Label Encoding to the Ordinal Columns
+
+This chunk applies the mappings using a loop.  
+A new encoded column is created for each feature using the suffix `_ord`.
+
+```{r apply-ordinal-encoding, message=FALSE, warning=FALSE}
+# Apply ordinal encoding using the mapping list
+# The original columns are kept unchanged
+# New encoded columns are created with suffix "_ord"
+
+for (col in names(ordinal_mappings)) {
+  
+  # Create the new encoded column name
+  new_col_name <- paste0(col, "_ord")
+  
+  # Convert values using the defined mapping
+  dataset[[new_col_name]] <- unname(ordinal_mappings[[col]][as.character(dataset[[col]])])
+}
+
+cat("Ordinal label encoding completed.\n")
+```
+
+### Check the Encoded Columns
+
+This chunk verifies the encoding by printing the original distinct values and their encoded forms for each ordinal column.
+
+```{r verify-ordinal-encoding, message=FALSE, warning=FALSE}
+# Create a verification list showing original values and encoded values
+ordinal_encoding_check <- list()
+
+for (col in names(ordinal_mappings)) {
+  
+  encoded_col <- paste0(col, "_ord")
+  
+  check_table <- data.frame(
+    Original_Value = sort(unique(as.character(dataset[[col]]))),
+    stringsAsFactors = FALSE
+  )
+  
+  check_table$Encoded_Value <- unname(ordinal_mappings[[col]][check_table$Original_Value])
+  
+  ordinal_encoding_check[[col]] <- check_table
+}
+
+cat("Ordinal encoding check created.\n")
+cat("Use ordinal_encoding_check[['LotShape']] or ordinal_encoding_check[['BsmtQual']] to inspect a specific feature.\n")
+
+print(ordinal_encoding_check)
+```
+
+### Summary of the Newly Created Ordinal Columns
+
+This chunk lists the newly created ordinal-encoded variables.
+
+```{r list-encoded-ordinal-columns, message=FALSE, warning=FALSE}
+# List all newly created ordinal encoded columns
+ordinal_encoded_columns <- paste0(names(ordinal_mappings), "_ordinal")
+
+cat("New ordinal encoded columns added to the dataset:\n")
+print(ordinal_encoded_columns)
+```
+### Encode Nominal Categorical Variables
+
+### Why One-Hot Encoding Is Used for These Columns
+
+The following categorical columns are treated as **nominal** because their values do **not** have a natural ranking or progression.  
+For such variables, label encoding would incorrectly impose an artificial numeric order. Therefore, **one-hot encoding** is used instead.
+
+In one-hot encoding:
+
+- each category is converted into a separate binary column
+- a value of `1` means the row belongs to that category
+- a value of `0` means the row does not belong to that category
+
+The original nominal columns are kept unchanged, and the new dummy columns are added directly to the main dataset.
+
+### Define the Nominal Columns
+
+This chunk defines the list of nominal categorical features to be one-hot encoded.  
+The list is based on the earlier feature-type analysis.
+
+```{r define-nominal-columns, message=FALSE, warning=FALSE}
+# Define the nominal categorical columns
+# These variables do not have a meaningful order
+
+nominal_features <- c(
+  "MSZoning",
+  "Utilities",
+  "Street",
+  "Alley",
+  "LandContour",
+  "LotConfig",
+  "Neighborhood",
+  "Condition1",
+  "Condition2",
+  "BldgType",
+  "HouseStyle",
+  "RoofStyle",
+  "RoofMatl",
+  "Exterior1st",
+  "Exterior2nd",
+  "MasVnrType",
+  "Foundation",
+  "Heating",
+  "CentralAir",
+  "Electrical",
+  "GarageType",
+  "MiscFeature",
+  "SaleType",
+  "SaleCondition"
+)
+
+# Keep only the columns that actually exist in the current dataset
+# This makes the code safer if any column was removed or renamed earlier
+nominal_features <- intersect(nominal_features, names(dataset))
+
+cat("Nominal columns selected for one-hot encoding:\n")
+print(nominal_features)
+```
+
+### Apply One-Hot Encoding to the Nominal Columns
+
+This chunk applies one-hot encoding using a loop.  
+For each nominal variable, separate dummy columns are created and added to the main dataset.
+
+```{r apply-onehot-encoding, message=FALSE, warning=FALSE}
+# Initialize a list to store the names of all new dummy columns
+nominal_dummy_columns <- list()
+
+# Apply one-hot encoding to each nominal feature
+for (col in nominal_features) {
+  
+  # Convert the column to factor to ensure proper category handling
+  temp_factor <- as.factor(dataset[[col]])
+  
+  # Create a model matrix with one binary column per category
+  # The "-1" removes the intercept so that all categories get their own columns
+  dummy_matrix <- model.matrix(~ temp_factor - 1)
+  
+  # Create cleaner and more informative column names
+  # make.names() is used to ensure valid R column names
+  cleaned_levels <- make.names(levels(temp_factor))
+  new_dummy_names <- paste0(col, "_", cleaned_levels)
+  
+  # Assign the cleaned names
+  colnames(dummy_matrix) <- new_dummy_names
+  
+  # Add the dummy columns to the main dataset
+  dataset <- cbind(dataset, as.data.frame(dummy_matrix))
+  
+  # Store the names of the created dummy columns
+  nominal_dummy_columns[[col]] <- new_dummy_names
+}
+
+cat("One-hot encoding completed for nominal categorical variables.\n")
+```
+
+### Verify the Newly Created Dummy Columns
+
+This chunk prints the dummy-column names created for each nominal feature.
+
+```{r verify-onehot-columns, message=FALSE, warning=FALSE}
+# Print the dummy columns created for each nominal feature
+
+cat("Dummy columns created for each nominal feature:\n")
+print(nominal_dummy_columns)
+```
+
+### Count the Total Number of Dummy Columns Created
+
+This chunk summarizes how many one-hot encoded columns were generated.
+
+```{r count-onehot-columns, message=FALSE, warning=FALSE}
+# Count the total number of one-hot encoded columns created
+
+total_nominal_dummy_columns <- sum(sapply(nominal_dummy_columns, length))
+
+onehot_summary <- data.frame(
+  Measure = c(
+    "Number of nominal columns encoded",
+    "Total number of dummy columns created"
+  ),
+  Value = c(
+    length(nominal_features),
+    total_nominal_dummy_columns
+  )
+)
+
+cat("Summary of one-hot encoding:\n")
+print(onehot_summary)
+```
+
+### Final Check
+
+This chunk shows the updated dataset shape after adding all nominal dummy variables.
+
+```{r dataset-shape-after-onehot, message=FALSE, warning=FALSE}
+# Show the dataset size after one-hot encoding
+
+cat("Updated dataset shape after one-hot encoding:\n")
+cat("Number of rows    :", nrow(dataset), "\n")
+cat("Number of columns :", ncol(dataset), "\n")
+```
+
+
+
+##  Normalize / Standardize Numerical Features
+
+### Why Only Selected Numeric Features Are Scaled
+
+Scaling is applied only to the final numeric predictor features that are suitable for transformation.  
+It is not applied to:
+
+- `Id`, because it is only an identifier
+- `SalePrice`, because it is the target variable
+- `MSSubClass`, `MoSold`, and `YrSold`, because they are treated as categorical in meaning
+- transformed duplicate versions such as `LotArea_sqrt`, `LotFrontage_sqrt`, `LotArea_log`, and `LotFrontage_log`, because they are not being used as final main numeric predictors
+
+In this section, both **standardization** and **normalization** are created and stored inside the main dataset as new columns:
+
+- columns ending with `_std` = standardized versions
+- columns ending with `_norm` = normalized versions
+
+The original variables remain unchanged.
+
+### Select the Numeric Features to Scale
+
+This chunk creates the numeric feature list after excluding identifier, target, categorical-style numeric fields, and duplicate transformed columns.
+
+```{r select-numeric-features-for-scaling, message=FALSE, warning=FALSE}
+# Columns that should not be scaled
+exclude_from_scaling <- c(
+  "SalePrice",
+  "MSSubClass",
+  "MoSold",
+  "YrSold",
+  "LotArea_sqrt",
+  "LotFrontage_sqrt",
+  "LotArea_log",
+  "LotFrontage_log"
+)
+
+
+
+# Keep only the numeric features that should actually be scaled
+numeric_features2 <- setdiff(numeric_features, exclude_from_scaling)
+
+cat("Numeric features selected for scaling:\n")
+print(numeric_features2)
+```
+
+### Define Scaling Functions
+
+This chunk defines two helper functions:
+
+- one for z-score standardization
+- one for min-max normalization
+
+A safety check is included for constant-value columns.
+
+```{r define-scaling-functions, message=FALSE, warning=FALSE}
+# Function for z-score standardization
+# Formula: (x - mean) / standard deviation
+standardize_feature <- function(x) {
+  if (sd(x, na.rm = TRUE) == 0) {
+    return(rep(0, length(x)))
+  } else {
+    return((x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))
+  }
+}
+
+# Function for min-max normalization
+# Formula: (x - min) / (max - min)
+normalize_feature <- function(x) {
+  min_val <- min(x, na.rm = TRUE)
+  max_val <- max(x, na.rm = TRUE)
+  
+  if ((max_val - min_val) == 0) {
+    return(rep(0, length(x)))
+  } else {
+    return((x - min_val) / (max_val - min_val))
+  }
+}
+```
+
+### Add Standardized and Normalized Columns to the Main Dataset
+
+This chunk adds two new versions of each selected numeric feature directly into the main dataset:
+
+- `<original_name>_std`
+- `<original_name>_norm`
+
+```{r add-scaled-columns-to-main-dataset, message=FALSE, warning=FALSE}
+# Add standardized and normalized versions directly into the main dataset
+
+for (col in numeric_features2) {
+  
+  # Create new standardized column name
+  std_col_name <- paste0(col, "_std")
+  
+  # Create new normalized column name
+  norm_col_name <- paste0(col, "_norm")
+  
+  # Add the transformed columns into the same dataset
+  dataset[[std_col_name]] <- standardize_feature(dataset[[col]])
+  dataset[[norm_col_name]] <- normalize_feature(dataset[[col]])
+}
+
+cat("Standardized and normalized columns have been added to the main dataset.\n")
+```
+
+### Verify the Standardized Columns
+
+This chunk checks whether the standardized columns have mean close to 0 and standard deviation close to 1.
+
+```{r verify-standardized-columns, message=FALSE, warning=FALSE}
+# Create the list of standardized column names
+standardized_columns <- paste0(numeric_features2, "_std")
+
+# Check the mean and standard deviation of standardized columns
+standardization_check <- data.frame(
+  Feature = standardized_columns,
+  Mean_After_Standardization = sapply(dataset[standardized_columns], function(x) round(mean(x, na.rm = TRUE), 4)),
+  SD_After_Standardization = sapply(dataset[standardized_columns], function(x) round(sd(x, na.rm = TRUE), 4)),
+  stringsAsFactors = FALSE
+)
+
+cat("Verification of standardized columns:\n")
+print(standardization_check)
+```
+
+### Verify the Normalized Columns
+
+This chunk checks whether the normalized columns fall within the range \([0,1]\).
+
+```{r verify-normalized-columns, message=FALSE, warning=FALSE}
+# Create the list of normalized column names
+normalized_columns <- paste0(numeric_features2, "_norm")
+
+# Check the minimum and maximum of normalized columns
+normalization_check <- data.frame(
+  Feature = normalized_columns,
+  Min_After_Normalization = sapply(dataset[normalized_columns], function(x) round(min(x, na.rm = TRUE), 4)),
+  Max_After_Normalization = sapply(dataset[normalized_columns], function(x) round(max(x, na.rm = TRUE), 4)),
+  stringsAsFactors = FALSE
+)
+
+cat("Verification of normalized columns:\n")
+print(normalization_check)
+```
+
+### Final Dataset Check
+
+This final chunk shows the updated dataset shape after adding the new scaled columns.
+
+```{r final-dataset-check-after-scaling, message=FALSE, warning=FALSE}
+cat("Updated dataset shape after adding standardized and normalized columns:\n")
+cat("Number of rows    :", nrow(dataset), "\n")
+cat("Number of columns :", ncol(dataset), "\n")
+```
+##  Feature Engineering
+
+### Objective of This Section
+Feature engineering involves creating new variables from existing data to help the model better capture the underlying patterns that drive house prices. By combining related features, we can reduce dimensionality and provide the model with more "meaningful" signals as required by the project guidelines.
+
+
+### Total Indoor Square Footage
+Instead of treating the basement and above-ground living areas separately, we combine them into one TotalSF feature. This represents the total enclosed living space available to the buyer, which is often the single most important factor in determining property value
+
+```{r fe1, message=FALSE, warning=FALSE}
+# Create Total Indoor Square Footage
+dataset <- dataset %>% 
+  mutate(TotalSF = TotalBsmtSF + GrLivArea)
+
+cat("Created TotalSF by combining TotalBsmtSF and GrLivArea.")
+```
+
+### Total Outdoor Square Footage
+Houses in the Ames dataset have several porch and deck types (WoodDeckSF, OpenPorchSF, etc.). We combine these into a single TotalOutdoorSF variable. This reduces noise by focusing on the total usable outdoor area rather than the specific type of porch
+
+
+```{r fe2, message=FALSE, warning=FALSE}
+# Create Total Outdoor Square Footage
+dataset <- dataset %>% 
+  mutate(TotalOutdoorSF = WoodDeckSF + OpenPorchSF + EnclosedPorch + 
+                          `3SsnPorch` + ScreenPorch)
+
+cat("Created TotalOutdoorSF by combining all porch and deck areas.")
+```
+
+### Total Bathroom Count
+A house's utility is highly dependent on the number of bathrooms. We follow standard real estate logic by counting a full bath as 1.0 and a half bath as 0.5. This provides a more precise continuous variable for the regression model.
+
+
+```{r fe3, message=FALSE, warning=FALSE}
+# Create Total Bathroom count
+dataset <- dataset %>% 
+  mutate(TotalBath = FullBath + (0.5 * HalfBath) + 
+                     BsmtFullBath + (0.5 * BsmtHalfBath))
+
+cat("Created TotalBath by combining all full and half baths.")
+```
+### Property Age and Years Since Remodel
+The absolute YearBuilt is less important than how old the house was at the time it was sold. We also calculate the years since the last remodel, as homes with recent updates typically command a higher price premium.
+
+```{r fe4, message=FALSE, warning=FALSE}
+# Create HouseAge and YearsSinceRemodel
+dataset <- dataset %>% 
+  mutate(HouseAge = as.numeric(as.character(YrSold)) - YearBuilt,
+         YearsSinceRemodel = as.numeric(as.character(YrSold)) - YearRemodAdd)
+
+cat("Created HouseAge and YearsSinceRemodel based on the year sold.")
+```
+
+### Overall Property Score
+This is an interaction term. By multiplying OverallQual (material/finish) and OverallCond (maintenance), we allow the model to capture the "synergy" between a well-built house that has also been well-maintained.
+
+```{r fe5, message=FALSE, warning=FALSE}
+# Create TotalHouseScore as an interaction term
+dataset <- dataset %>% 
+  mutate(TotalHouseScore = OverallQual * OverallCond)
+
+cat("Created TotalHouseScore by multiplying Quality and Condition.")
+```
+### Luxury Amenities (Binary Flags)
+Variables like PoolArea and Fireplaces have many zero values because these amenities are rare. We create binary flags (HasPool, HasFireplace) to tell the model directly whether these luxury features exist, simplifying the data signal.
+
+```{r fe6, message=FALSE, warning=FALSE}
+# Create binary flags for rare amenities
+dataset <- dataset %>% 
+  mutate(HasPool = ifelse(PoolArea > 0, 1, 0),
+         HasFireplace = ifelse(Fireplaces > 0, 1, 0))
+
+cat("Created binary flags for Pool and Fireplace presence.")
+```
+### Space Efficiency (Average Room Size)
+By dividing the total living area by the number of rooms above ground, we create an AvgRoomArea feature. This helps the model distinguish between houses with many small rooms versus those with an open, spacious layout
+
+```{r fe7, message=FALSE, warning=FALSE}
+# Create Average Room Area
+dataset <- dataset %>% 
+  mutate(AvgRoomArea = ifelse(TotRmsAbvGrd > 0, GrLivArea / TotRmsAbvGrd, 0))
+
+cat("Created AvgRoomArea to measure space efficiency.")
+```
+### Log Transformation of the Target Variable
+To address the right-skewness of SalePrice observed in the EDA section, we apply a log transformation. This ensures the target variable follows a more normal distribution, which is a key assumption for the Linear Regression model.
+
+```{r fe8, message=FALSE, warning=FALSE}
+# Handle Skewness of the Target (SalePrice)
+dataset$SalePrice_log <- log(dataset$SalePrice)
+
+cat("Log transformation applied to SalePrice. SalePrice_log will be used for modeling.")
+```
+
+###Reasons for Dropping Original Columns
+SalePrice: We created SalePrice_log to make the data more "normal," so the original price column is no longer needed for the math part of the model.  
+
+TotalBsmtSF and GrLivArea: These two are already added together inside our new TotalSF column, so keeping them would be repeating the same information.  
+
+Individual Bathroom Counts: FullBath, HalfBath, BsmtFullBath, and BsmtHalfBath are all combined into the single TotalBath variable.  
+
+Building and Sale Years: YearBuilt, YearRemodAdd, and YrSold were only used to calculate the house age and remodel age; once we have HouseAge, the specific years are useless to the model.  
+
+Porch and Deck Areas: All five individual porch types (Wood Deck, Open Porch, etc.) are now summed up in TotalOutdoorSF, making the original columns redundant.  
+
+PoolArea and Fireplaces: We created simple "Yes/No" flags (HasPool and HasFireplace) to represent these, so the original area and count numbers are no longer necessary.  
+
+Original LotArea and LotFrontage: Since we are using the log-transformed versions to fix skewness, we drop the originals so the model doesn't "double-count" the same land data.  
+
+Id: This is just a row ID number and has nothing to do with how much a house is worth.
+
+
+```{r fe9, message=FALSE, warning=FALSE}
+# 1. Create a copy for modeling
+modeling_dataset <- dataset
+
+# 2. List original columns to drop (The "Building Blocks")
+# These have been replaced by engineered features like TotalSF, TotalBath, etc.
+building_blocks <- c(
+  "TotalBsmtSF", "GrLivArea",                                    # Replaced by TotalSF
+  "FullBath", "HalfBath", "BsmtFullBath", "BsmtHalfBath",        # Replaced by TotalBath
+  "YearBuilt", "YearRemodAdd", "YrSold",                        # Replaced by HouseAge/YearsSinceRemodel
+  "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", 
+  "3SsnPorch", "ScreenPorch",                                    # Replaced by TotalOutdoorSF
+  "PoolArea", "Fireplaces", "PoolQC", "FireplaceQu"                                       # Replaced by binary flags
+)
+
+# 3. List redundant transformations and identifiers to drop
+redundant_cols <- c(
+  "Id",                      # Non-predictive identifier
+  "SalePrice",               # Replaced by SalePrice_log
+  "LotArea", "LotFrontage" ,  # Replaced by LotArea_log and LotFrontage_log
+  "LotArea_sqrt", "LotFrontage_sqrt"
+)
+
+# 4. Remove all Square Root and Normalized versions 
+extra_transforms <- grep("(_norm|_sqrt)$", names(modeling_dataset), value = TRUE)
+building_blocks_std <- paste0(building_blocks, "_std")
+redundant_cols_std <- paste0(redundant_cols, "_std")
+
+# 5. Execute the drop using any_of() to avoid "missing element" errors
+
+modeling_dataset <- modeling_dataset %>% select(-any_of(building_blocks))
+modeling_dataset <- modeling_dataset %>% select(-any_of(redundant_cols))
+modeling_dataset <- modeling_dataset %>% select(-any_of(extra_transforms))
+modeling_dataset <- modeling_dataset %>% select(-any_of(building_blocks_std))
+modeling_dataset <- modeling_dataset %>% select(-any_of(redundant_cols_std))
+modeling_dataset <- modeling_dataset %>% select(-any_of(numeric_features2))
+modeling_dataset <- modeling_dataset %>% select(-any_of(cat_col))
+
+
+# 6. Final Clean: Ensure all column names are valid for R models
+names(modeling_dataset) <- make.names(names(modeling_dataset), unique = TRUE)
+
+cat("Modeling dataset finalized.")
+cat("Total rows    :", nrow(modeling_dataset))
+cat("Total columns :", ncol(modeling_dataset))
+```
+### Main dataset column
+Main dataset which has all column with out any droppping all the names of columns of main dataset 
+
+```{r fe10, message=FALSE, warning=FALSE}
+# Get all column names
+column_names <- colnames(dataset)
+
+# Print a numbered list of all columns so none are missed in the report
+cat(paste0(1:length(column_names), ". ", column_names), sep = "\n")
+
+cat("\nTotal Column Count:", ncol(dataset))
+```
+
+
+
+### Final dataset column
+Total number of columns and all columns name for final dataset wich is ready fir model training
+
+```{r fe11, message=FALSE, warning=FALSE}
+# Get all column names
+final_column_names <- colnames(modeling_dataset)
+
+# Print a numbered list of all columns so none are missed in the report
+cat(paste0(1:length(final_column_names), ". ", final_column_names), sep = "\n")
+
+cat("\nTotal Column Count:", ncol(modeling_dataset))
+```
+
+##  Check Skewness of Numeric Columns
+
+### Why Skewness Is Checked
+
+Skewness measures the asymmetry of a numeric variable’s distribution.  
+A skewness value near `0` suggests a roughly symmetric distribution, while larger positive or negative values indicate stronger skewness.
+
+At this stage, skewness is checked for **all numeric columns** in the current dataset.  
+This step is only for diagnosis and interpretation. It does not automatically mean that every skewed variable will be transformed.
+
+### Compute Skewness for All Numeric Columns
+
+This chunk calculates skewness for every numeric column in the dataset and sorts the result by the absolute size of skewness.
+
+```{r skewness-all-numeric-columns, message=FALSE, warning=FALSE}
+# Calculate skewness for each numeric column
+
+# We exclude the target 'SalePrice' (if present) or its log version for this table
+
+modeling_numeric_cols <- grep("(_std|_log)$", colnames(modeling_dataset), value = TRUE)
+modeling_numeric_cols <- setdiff(modeling_numeric_cols, "SalePrice_log")
+
+# na.rm = TRUE ensures missing values do not interfere
+skewness_summary <- data.frame(
+  Feature = modeling_numeric_cols,
+  Skewness = sapply(modeling_dataset[modeling_numeric_cols], function(x) e1071::skewness(x, na.rm = TRUE, type = 2)),
+  stringsAsFactors = FALSE
+)
+
+# Add absolute skewness for easier ranking
+skewness_summary$Abs_Skewness <- abs(skewness_summary$Skewness)
+
+# Sort by highest absolute skewness
+skewness_summary <- skewness_summary %>%
+  arrange(desc(Abs_Skewness))
+
+cat("Skewness summary for all numeric columns:\n")
+print(skewness_summary)
+```
+
+### Identify Strongly Skewed Numeric Columns
+
+This chunk filters the numeric columns whose absolute skewness is greater than `1`, which is a common rule-of-thumb threshold for strong skewness.
+
+```{r strongly-skewed-numeric-columns, message=FALSE, warning=FALSE}
+# Filter strongly skewed numeric columns using |skewness| > 1
+strongly_skewed_numeric <- skewness_summary %>%
+  filter(Abs_Skewness > 1)
+
+cat("Strongly skewed numeric columns (|skewness| > 1):\n")
+print(strongly_skewed_numeric)
+```
+### Elective Skewness Correction
+Why These Features Were Chosen:
+Continuous Area Signals: X1stFlrSF, MasVnrArea, and BsmtFinSF1 represent physical dimensions where even small changes can significantly impact price.  
+
+Normalizing Distribution: These features exhibit high right-skewness. Applying a log transformation pulls extreme outliers closer to the mean, making the distribution more symmetric.  
+
+Linear Model Performance: Linear Regression assumes a linear relationship between predictors and the target; log-transforming area features helps stabilize variance and linearize these relationships.  
+
+Why Other Skewed Features (e.g., MiscVal, PoolArea) Were Excluded:
+Sparsity Problem: Features like MiscVal and LowQualFinSF are mostly zeros (sparse data). Transforming a column that is 95% zero will not make it "Normal".
+
+Binary Interpretation: For sparse features, a simple "Yes/No" binary flag (already created in Section 4.6) provides a much cleaner signal to the model than a skewed numeric value.
+
+Discrete Counts: Count variables (like KitchenAbvGr) are discrete. Log transformations are intended for continuous measurements, not small integer counts.
+
+
+```{r strongly-skewed-numeric-columns-handeling, message=FALSE, warning=FALSE}
+# Apply log1p transformation to replace original values
+# log1p is used to safely handle zero values [log(1+x)]
+
+# Create log-transformed versions of key area features
+modeling_dataset$X1stFlrSF_log <- log1p(dataset$`1stFlrSF`)
+modeling_dataset$MasVnrArea_log <- log1p(dataset$MasVnrArea)
+modeling_dataset$BsmtFinSF1_log <- log1p(dataset$BsmtFinSF1)
+
+cat("Created _log versions for X1stFlrSF, MasVnrArea, and BsmtFinSF1 to handle skewness.")
+
+cat("Skewness handled for X1stFlrSF, MasVnrArea, and BsmtFinSF1 by replacing original values with log-transformed data.")
+
+up_cols <- c("X1stFlrSF_log", "MasVnrArea_log", "BsmtFinSF1_log")
+# na.rm = TRUE ensures missing values do not interfere
+skewness_summary <- data.frame(
+  Feature = up_cols,
+  Skewness = sapply(modeling_dataset[up_cols], function(x) e1071::skewness(x, na.rm = TRUE, type = 2)),
+  stringsAsFactors = FALSE
+)
+
+# Add absolute skewness for easier ranking
+skewness_summary$Abs_Skewness <- abs(skewness_summary$Skewness)
+
+# Sort by highest absolute skewness
+skewness_summary <- skewness_summary %>%
+  arrange(desc(Abs_Skewness))
+
+cat("Skewness summary for all numeric columns:\n")
+print(skewness_summary)
+
+
+del_cols <- c("X1stFlrSF_std", "MasVnrArea_std", "BsmtFinSF1_std")
+modeling_dataset <- modeling_dataset %>% select(-any_of(del_cols))
+```
+
+
+
+# Modeling
+
+### Selected Regression Models
+
+Two regression models are used in this project:
+
+- **Linear Regression** as the baseline model
+- **Random Forest Regression** as the main model
+
+The dataset is split into training and testing sets using the **80:20 rule**, and model performance is evaluated using:
+
+- **RMSE** (Root Mean Squared Error)
+- **MAE** (Mean Absolute Error)
+- **R²** (Coefficient of Determination)
+
+### Why These Models Were Chosen
+
+Linear Regression is used as a simple and interpretable baseline model.  
+Random Forest is used as the main model because it can capture nonlinear relationships and usually performs well on structured tabular regression data such as housing datasets.
+
+##  Prepare the Final Modeling Dataset
+
+This subsection prepares the dataset for modeling.
+
+- `Id` is removed because it is only an identifier
+- generated duplicate columns such as `_std`, `_norm`, `_log`, and `_sqrt` are excluded from modeling
+- `SalePrice` is kept as the target variable
+
+```{r prepare-modeling-dataset, message=FALSE, warning=FALSE}
+# Make all column names valid for modeling
+names(modeling_dataset) <- make.names(names(modeling_dataset), unique = TRUE)
+
+cat("Final modeling dataset shape:\n")
+cat("Number of rows    :", nrow(modeling_dataset), "\n")
+cat("Number of columns :", ncol(modeling_dataset), "\n")
+```
+
+## Train-Test Split (80:20)
+
+This subsection splits the data into training and testing sets.
+
+```{r train-test-split, message=FALSE, warning=FALSE}
+# Set seed for reproducibility
+set.seed(123)
+
+# Create an 80:20 train-test split
+train_index <- sample(
+  x = seq_len(nrow(modeling_dataset)),
+  size = floor(0.80 * nrow(modeling_dataset))
+)
+
+train_data <- modeling_dataset[train_index, ]
+test_data  <- modeling_dataset[-train_index, ]
+
+cat("Training set size :", nrow(train_data), "rows\n")
+cat("Testing set size  :", nrow(test_data), "rows\n")
+```
+
+##  Define Evaluation Metrics
+
+This chunk defines a small helper function to compute regression metrics.
+
+```{r regression-metrics-function, message=FALSE, warning=FALSE}
+# Function to calculate regression evaluation metrics
+regression_metrics <- function(actual, predicted) {
+  rmse <- sqrt(mean((actual - predicted)^2))
+  mae  <- mean(abs(actual - predicted))
+  r2   <- 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+  
+  data.frame(
+    RMSE = rmse,
+    MAE  = mae,
+    R2   = r2
+  )
+}
+```
+
+##  Linear Regression Model
+
+This subsection trains the baseline Linear Regression model and generates predictions on the test set.
+
+Since one-hot encoded dummy columns were added for all nominal categories, the Linear Regression model is fitted **without intercept** (`- 1`) to avoid perfect multicollinearity caused by full dummy encoding.
+
+```{r linear-regression-model, message=FALSE, warning=FALSE}
+# Train the Linear Regression model
+linear_model <- lm(SalePrice_log ~ . - 1, data = train_data)
+
+# Predict SalePrice for the test set
+linear_predictions <- predict(linear_model, newdata = test_data)
+
+# Evaluate the Linear Regression model
+linear_results <- regression_metrics(
+  actual = test_data$SalePrice,
+  predicted = linear_predictions
+)
+
+cat("Linear Regression performance:\n")
+print(linear_results)
+```
+
+##  Random Forest Regression Model
+
+This subsection trains the Random Forest model and generates predictions on the test set.
+
+```{r random-forest-model, message=FALSE, warning=FALSE}
+library(randomForest)
+# Train the Random Forest model
+rf_model <- randomForest(
+  SalePrice_log ~ .,
+  data = train_data,
+  ntree = 500,
+  importance = TRUE
+)
+
+# Predict SalePrice for the test set
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+# Evaluate the Random Forest model
+rf_results <- regression_metrics(
+  actual = test_data$SalePrice,
+  predicted = rf_predictions
+)
+
+cat("Random Forest performance:\n")
+print(rf_results)
+```
+
+##  Compare Model Performance
+
+This subsection combines the results of both models into one comparison table.
+
+```{r compare-regression-models, message=FALSE, warning=FALSE}
+# Combine the results of both models into a single comparison table
+model_comparison <- rbind(
+  cbind(Model = "Linear Regression", linear_results),
+  cbind(Model = "Random Forest", rf_results)
+)
+
+cat("Comparison of model performance on the test set:\n")
+print(model_comparison)
+```
+```{r tuning-package-setup, message=FALSE, warning=FALSE}
+# Install and load required packages for tuning if needed
+
+if (!require(MASS)) {
+  install.packages("MASS")
+  library(MASS)
+}
+
+if (!require(randomForest)) {
+  install.packages("randomForest")
+  library(randomForest)
+}
+```
+
+##  Tune Linear Regression Using Stepwise AIC
+
+### Create Inner Train-Validation Split for Tuning
+
+This chunk creates an inner split inside the training data.  
+The inner validation set is used only for tuning.
+
+```{r inner-train-validation-split, message=FALSE, warning=FALSE}
+# Create inner train-validation split from the training data
+set.seed(456)
+
+inner_train_index <- sample(
+  x = seq_len(nrow(train_data)),
+  size = floor(0.80 * nrow(train_data))
+)
+
+train_inner <- train_data[inner_train_index, ]
+valid_inner <- train_data[-inner_train_index, ]
+
+cat("Inner training set size   :", nrow(train_inner), "rows\n")
+cat("Inner validation set size :", nrow(valid_inner), "rows\n")
+```
+
+
+### Why This Is Considered Tuning for Linear Regression
+
+Ordinary Linear Regression does not have many standard hyperparameters like tree-based models.  
+Therefore, tuning is done by selecting a better subset of predictors using **stepwise AIC**.
+
+This procedure starts from the full model and removes or adds predictors to improve model quality according to the AIC criterion.
+
+```{r tune-linear-regression-stepwise, message=FALSE, warning=FALSE}
+# Fit the full Linear Regression model on the inner training set
+# "-1" is used because full one-hot encoding was applied earlier
+full_lm_inner <- lm(SalePrice_log ~ . - 1, data = train_inner)
+
+# Tune the model using stepwise AIC
+tuned_lm_inner <- MASS::stepAIC(
+  full_lm_inner,
+  direction = "both",
+  trace = FALSE
+)
+
+cat("Stepwise AIC tuning for Linear Regression completed.\n")
+cat("Final tuned Linear Regression formula:\n")
+print(formula(tuned_lm_inner))
+```
+
+### Evaluate the Tuned Linear Regression on the Validation Set
+
+```{r evaluate-tuned-linear-regression-validation, message=FALSE, warning=FALSE}
+# Predict on the inner validation set
+lm_valid_predictions <- predict(tuned_lm_inner, newdata = valid_inner)
+
+# Evaluate validation performance
+lm_valid_results <- regression_metrics(
+  actual = valid_inner$SalePrice_log,
+  predicted = lm_valid_predictions
+)
+
+cat("Validation performance of tuned Linear Regression:\n")
+print(lm_valid_results)
+```
+
+### Refit the Tuned Linear Regression on the Full Training Set
+
+This chunk refits the tuned formula using the full outer training data, then evaluates it on the final test set.
+
+```{r final-tuned-linear-regression-test, message=FALSE, warning=FALSE}
+# Refit the tuned Linear Regression model on the full outer training set
+final_tuned_lm <- lm(
+  formula(tuned_lm_inner),
+  data = train_data
+)
+
+# Predict on the final test set
+lm_test_predictions <- predict(final_tuned_lm, newdata = test_data)
+
+# Evaluate final test performance
+lm_tuned_results <- regression_metrics(
+  actual = test_data$SalePrice_log,
+  predicted = lm_test_predictions
+)
+
+cat("Final test performance of tuned Linear Regression:\n")
+print(lm_tuned_results)
+```
+
+##  Tune Random Forest Using Grid Search
+
+### Why These Hyperparameters Are Tuned
+
+For Random Forest, the following hyperparameters are tuned:
+
+- `mtry` = number of variables randomly tried at each split
+- `ntree` = number of trees in the forest
+- `nodesize` = minimum size of terminal nodes
+
+A small grid is used so that tuning remains practical for a student project.
+
+```{r random-forest-tuning-grid, message=FALSE, warning=FALSE}
+# Determine number of predictors
+p <- ncol(train_inner) - 1
+
+# Create a small hyperparameter grid
+mtry_grid <- unique(pmax(1, round(c(sqrt(p), p / 3, p / 2))))
+ntree_grid <- c(300, 500)
+nodesize_grid <- c(3, 5)
+
+rf_tuning_grid <- expand.grid(
+  mtry = mtry_grid,
+  ntree = ntree_grid,
+  nodesize = nodesize_grid
+)
+
+cat("Random Forest tuning grid:\n")
+print(rf_tuning_grid)
+```
+
+### Run Random Forest Grid Search
+
+```{r run-rf-grid-search, message=FALSE, warning=FALSE}
+# Initialize an empty data frame to store tuning results
+rf_tuning_results <- data.frame()
+
+# Grid search over Random Forest hyperparameters
+for (i in 1:nrow(rf_tuning_grid)) {
+  
+  current_mtry <- rf_tuning_grid$mtry[i]
+  current_ntree <- rf_tuning_grid$ntree[i]
+  current_nodesize <- rf_tuning_grid$nodesize[i]
+  
+  set.seed(123 + i)
+  
+  # Train Random Forest candidate model
+  rf_candidate <- randomForest(
+    SalePrice_log ~ .,
+    data = train_inner,
+    mtry = current_mtry,
+    ntree = current_ntree,
+    nodesize = current_nodesize,
+    importance = TRUE
+  )
+  
+  # Predict on validation set
+  rf_valid_predictions <- predict(rf_candidate, newdata = valid_inner)
+  
+  # Evaluate validation performance
+  rf_valid_metrics <- regression_metrics(
+    actual = valid_inner$SalePrice,
+    predicted = rf_valid_predictions
+  )
+  
+  # Store result
+  temp_result <- data.frame(
+    mtry = current_mtry,
+    ntree = current_ntree,
+    nodesize = current_nodesize,
+    RMSE = rf_valid_metrics$RMSE,
+    MAE = rf_valid_metrics$MAE,
+    R2 = rf_valid_metrics$R2
+  )
+  
+  rf_tuning_results <- rbind(rf_tuning_results, temp_result)
+}
+
+cat("Random Forest tuning results on validation set:\n")
+print(rf_tuning_results)
+```
+
+### Select the Best Random Forest Parameters
+
+```{r select-best-rf-params, message=FALSE, warning=FALSE}
+# Select the best hyperparameter combination
+# Lower RMSE is the main criterion
+
+best_rf_params <- rf_tuning_results %>%
+  arrange(RMSE, MAE, desc(R2)) %>%
+  slice(1)
+
+cat("Best Random Forest hyperparameters:\n")
+print(best_rf_params)
+```
+
+### Refit the Tuned Random Forest on the Full Training Set
+
+```{r final-tuned-rf-test, message=FALSE, warning=FALSE}
+# Train the final tuned Random Forest model on the full outer training set
+final_tuned_rf <- randomForest(
+  SalePrice_log ~ .,
+  data = train_data,
+  mtry = best_rf_params$mtry,
+  ntree = best_rf_params$ntree,
+  nodesize = best_rf_params$nodesize,
+  importance = TRUE
+)
+
+# Predict on the final test set
+rf_test_predictions <- predict(final_tuned_rf, newdata = test_data)
+
+# Evaluate final test performance
+rf_tuned_results <- regression_metrics(
+  actual = test_data$SalePrice,
+  predicted = rf_test_predictions
+)
+
+cat("Final test performance of tuned Random Forest:\n")
+print(rf_tuned_results)
+```
+
+##  Compare the Tuned Models
+
+```{r compare-tuned-models, message=FALSE, warning=FALSE}
+# Compare the final tuned models on the test set
+tuned_model_comparison <- rbind(
+  cbind(Model = "Tuned Linear Regression", lm_tuned_results),
+  cbind(Model = "Tuned Random Forest", rf_tuned_results)
+)
+
+cat("Comparison of tuned models on the test set:\n")
+print(tuned_model_comparison)
+```
+
+
+#   Evaluation & Interpretation
+
+The table above compares both models using:
+
+- **RMSE**: lower is better
+- **MAE**: lower is better
+- **R²**: higher is better
+
+The Linear Regression model serves as a baseline, while Random Forest is expected to perform better if the relationship between features and house prices is nonlinear.
+
+```{r c1, message=FALSE, warning=FALSE}
+
+cat("Linear Regression performance before tunning:\n")
+print(linear_results)
+
+cat("Linear Regression performance after tunning:\n")
+print(lm_tuned_results)
+
+```
+
+
+```{r c2, message=FALSE, warning=FALSE}
+
+cat("Random Forest performance before tuning:\n")
+print(rf_results)
+
+cat("Random Forest performance after tuning:\n")
+print(rf_tuned_results)
+
+```
+
+##  Prepare Final Modeling Dataset
+
+```{r model-package-setup, message=FALSE, warning=FALSE}
+# Required packages for modeling and visualization
+extra_packages <- c("randomForest", "MASS", "rpart", "rpart.plot")
+
+installed_packages <- rownames(installed.packages())
+missing_extra <- extra_packages[!(extra_packages %in% installed_packages)]
+
+if (length(missing_extra) > 0) {
+  install.packages(missing_extra)
+}
+
+invisible(lapply(extra_packages, library, character.only = TRUE))
+```
+
+##  Test Predictions and Final Result Table
+
+```{r final-predictions-and-results, message=FALSE, warning=FALSE}
+
+# Final comparison table
+final_results_table <- rbind(
+  cbind(Model = "Linear Regression - Normal", linear_results),
+  cbind(Model = "Linear Regression - Tuned",  lm_tuned_results),
+  cbind(Model = "Random Forest - Normal",    rf_results),
+  cbind(Model = "Random Forest - Tuned",     rf_tuned_results)
+)
+
+cat("Final comparison of all models:\n")
+print(final_results_table)
+```
+
+##  Create a Combined Prediction Data Frame for Plots
+
+```{r build-plot-data, message=FALSE, warning=FALSE}
+plot_results <- rbind(
+  data.frame(Model = "Linear Regression - Normal",
+             Actual = test_data$SalePrice_log,
+             Predicted = linear_predictions),
+  data.frame(Model = "Linear Regression - Tuned",
+             Actual = test_data$SalePrice_log,
+             Predicted = lm_test_predictions),
+  data.frame(Model = "Random Forest - Normal",
+             Actual = test_data$SalePrice_log,
+             Predicted = rf_predictions),
+  data.frame(Model = "Random Forest - Tuned",
+             Actual = test_data$SalePrice_log,
+             Predicted = rf_test_predictions)
+)
+
+plot_results$Residual <- plot_results$Actual - plot_results$Predicted
+```
+
+##  Mandatory Result Visuals for Regression
+
+###  Actual vs Predicted Plot
+
+```{r actual-vs-predicted-plot, fig.height=8, fig.width=11}
+ggplot(plot_results, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ Model, scales = "free") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Actual vs Predicted Values",
+    x = "Actual SalePrice",
+    y = "Predicted SalePrice"
+  ) +
+  theme_minimal()
+```
+
+###  Residual vs Predicted Plot
+
+```{r residual-vs-predicted-plot, fig.height=8, fig.width=11}
+ggplot(plot_results, aes(x = Predicted, y = Residual)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~ Model, scales = "free") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Residual vs Predicted Plot",
+    x = "Predicted SalePrice",
+    y = "Residual"
+  ) +
+  theme_minimal()
+```
+
+###  Residual Distribution
+
+```{r residual-histogram-plot, fig.height=8, fig.width=11}
+ggplot(plot_results, aes(x = Residual)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.8) +
+  facet_wrap(~ Model, scales = "free") +
+  labs(
+    title = "Residual Distribution by Model",
+    x = "Residual",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+```
+
+##  Linear Regression Visuals
+
+###  Coefficient Plot for Normal Linear Regression
+
+```{r lm-normal-coef-plot, fig.height=7, fig.width=10}
+lm_coef_normal <- data.frame(
+  Feature = names(coef(linear_model)),
+  Coefficient = as.numeric(coef(linear_model))
+) %>%
+  filter(!is.na(Coefficient)) %>%
+  mutate(AbsCoef = abs(Coefficient)) %>%
+  arrange(desc(AbsCoef)) %>%
+  slice(1:20)
+
+ggplot(lm_coef_normal, aes(x = reorder(Feature, AbsCoef), y = Coefficient)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Coefficients: Linear Regression - Normal",
+    x = "Feature",
+    y = "Coefficient"
+  ) +
+  theme_minimal()
+```
+
+###  Coefficient Plot for Tuned Linear Regression
+
+```{r lm-tuned-coef-plot, fig.height=7, fig.width=10}
+lm_coef_tuned <- data.frame(
+  Feature = names(coef(final_tuned_lm)),
+  Coefficient = as.numeric(coef(final_tuned_lm))
+) %>%
+  filter(!is.na(Coefficient)) %>%
+  mutate(AbsCoef = abs(Coefficient)) %>%
+  arrange(desc(AbsCoef)) %>%
+  slice(1:20)
+
+ggplot(lm_coef_tuned, aes(x = reorder(Feature, AbsCoef), y = Coefficient)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Coefficients: Linear Regression - Tuned",
+    x = "Feature",
+    y = "Coefficient"
+  ) +
+  theme_minimal()
+```
+
+##  Random Forest Visuals
+
+###  OOB Error Curve for Normal Random Forest
+
+```{r rf-normal-oob-plot, fig.height=6, fig.width=9}
+rf_oob_normal <- data.frame(
+  Trees = 1:length(rf_model$mse),
+  OOB_MSE = rf_model$mse
+)
+
+ggplot(rf_oob_normal, aes(x = Trees, y = OOB_MSE)) +
+  geom_line() +
+  labs(
+    title = "OOB Error Curve: Random Forest - Normal",
+    x = "Number of Trees",
+    y = "OOB Mean Squared Error"
+  ) +
+  theme_minimal()
+```
+
+###  OOB Error Curve for Tuned Random Forest
+
+```{r rf-tuned-oob-plot, fig.height=6, fig.width=9}
+rf_oob_tuned <- data.frame(
+  Trees = 1:length(final_tuned_rf$mse),
+  OOB_MSE = final_tuned_rf$mse
+)
+
+ggplot(rf_oob_tuned, aes(x = Trees, y = OOB_MSE)) +
+  geom_line() +
+  labs(
+    title = "OOB Error Curve: Random Forest - Tuned",
+    x = "Number of Trees",
+    y = "OOB Mean Squared Error"
+  ) +
+  theme_minimal()
+```
+
+###  Variable Importance Plot for Normal Random Forest
+
+```{r rf-normal-importance-plot, fig.height=7, fig.width=10}
+rf_imp_normal <- importance(rf_model)
+
+rf_imp_normal_df <- data.frame(
+  Feature = rownames(rf_imp_normal),
+  Importance = rf_imp_normal[, if ("%IncMSE" %in% colnames(rf_imp_normal)) "%IncMSE" else 1]
+) %>%
+  arrange(desc(Importance)) %>%
+  slice(1:20)
+
+ggplot(rf_imp_normal_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Feature Importances: Random Forest - Normal",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+```
+
+###  Variable Importance Plot for Tuned Random Forest
+
+```{r rf-tuned-importance-plot, fig.height=7, fig.width=10}
+rf_imp_tuned <- importance(final_tuned_rf)
+
+rf_imp_tuned_df <- data.frame(
+  Feature = rownames(rf_imp_tuned),
+  Importance = rf_imp_tuned[, if ("%IncMSE" %in% colnames(rf_imp_tuned)) "%IncMSE" else 1]
+) %>%
+  arrange(desc(Importance)) %>%
+  slice(1:20)
+
+ggplot(rf_imp_tuned_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Feature Importances: Random Forest - Tuned",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+```
+
+###  Random Forest Tuning Results Plot
+
+```{r rf-tuning-results-plot, fig.height=6, fig.width=10}
+rf_tuning_results$Setting <- paste0(
+  "mtry=", rf_tuning_results$mtry,
+  ", ntree=", rf_tuning_results$ntree,
+  ", nodesize=", rf_tuning_results$nodesize
+)
+
+ggplot(rf_tuning_results, aes(x = reorder(Setting, RMSE), y = RMSE)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Random Forest Tuning Results (Validation RMSE)",
+    x = "Hyperparameter Setting",
+    y = "Validation RMSE"
+  ) +
+  theme_minimal()
+```
+
+##  Optional Tree Visual for Interpretation
+
+This is **not the random forest itself**.  
+It is a **single regression tree** trained only to give a tree-style visual interpretation, because a random forest contains many trees and cannot be summarized by one exact decision tree.
+
+```{r illustrative-regression-tree, fig.height=7, fig.width=11}
+reg_tree_model <- rpart(
+  SalePrice_log ~ .,
+  data = train_data,
+  method = "anova"
+)
+
+rpart.plot::rpart.plot(
+  reg_tree_model,
+  main = "Illustrative Regression Tree (Not the Random Forest Model)"
+)
+```
+
+##  Final Interpretation Notes
+
+```{r final-result-note, results='asis'}
+# Predictions on training data
+pred_train_lm_normal <- predict(linear_model, newdata = train_data)
+pred_train_lm_tuned  <- predict(final_tuned_lm, newdata = train_data)
+pred_train_rf_normal <- predict(rf_model, newdata = train_data)
+pred_train_rf_tuned  <- predict(final_tuned_rf, newdata = train_data)
+
+# Predictions on test data
+pred_test_lm_normal <- predict(linear_model, newdata = test_data)
+pred_test_lm_tuned  <- predict(final_tuned_lm, newdata = test_data)
+pred_test_rf_normal <- predict(rf_model, newdata = test_data)
+pred_test_rf_tuned  <- predict(final_tuned_rf, newdata = test_data)
+
+# Metrics function already assumed to exist:
+# regression_metrics(actual, predicted)
+
+# Training results
+train_results_all <- rbind(
+  cbind(Model = "Linear Regression - Normal", Dataset = "Train",
+        regression_metrics(train_data$SalePrice, pred_train_lm_normal)),
+  cbind(Model = "Linear Regression - Tuned", Dataset = "Train",
+        regression_metrics(train_data$SalePrice, pred_train_lm_tuned)),
+  cbind(Model = "Random Forest - Normal", Dataset = "Train",
+        regression_metrics(train_data$SalePrice, pred_train_rf_normal)),
+  cbind(Model = "Random Forest - Tuned", Dataset = "Train",
+        regression_metrics(train_data$SalePrice, pred_train_rf_tuned))
+)
+
+# Testing results
+test_results_all <- rbind(
+  cbind(Model = "Linear Regression - Normal", Dataset = "Test",
+        regression_metrics(test_data$SalePrice, pred_test_lm_normal)),
+  cbind(Model = "Linear Regression - Tuned", Dataset = "Test",
+        regression_metrics(test_data$SalePrice, pred_test_lm_tuned)),
+  cbind(Model = "Random Forest - Normal", Dataset = "Test",
+        regression_metrics(test_data$SalePrice, pred_test_rf_normal)),
+  cbind(Model = "Random Forest - Tuned", Dataset = "Test",
+        regression_metrics(test_data$SalePrice, pred_test_rf_tuned))
+)
+
+all_model_results <- rbind(train_results_all, test_results_all)
+
+cat("Train and Test Metrics for All 4 Models:\n")
+print(all_model_results)
+```
+
+
+
+
+
+
+```
